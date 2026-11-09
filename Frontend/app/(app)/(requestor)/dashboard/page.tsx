@@ -34,11 +34,17 @@ export default function DashboardPage() {
   const expiringSoon = sandboxes.find((s) => s.status === "Expiring");
 
   const stats = [
-    { icon: Box, label: "Active sandboxes", value: String(live.length), sub: "0 expired" },
-    { icon: Clock, label: "Pending requests", value: String(pending.length), sub: "Awaiting IT approval" },
-    { icon: IndianRupee, label: "Spend to date", value: money(spent), sub: `of ${money(approved)} approved` },
-    { icon: Shield, label: "Budget utilization", value: `${utilization}%`, sub: "Across active sandboxes" },
+    { icon: Box, label: "Active sandboxes", value: String(live.length), sub: "0 expired", tone: "orange" },
+    { icon: Clock, label: "Pending requests", value: String(pending.length), sub: "Awaiting IT approval", tone: "cyan" },
+    { icon: IndianRupee, label: "Spend to date", value: money(spent), sub: `of ${money(approved)} approved`, tone: "lime" },
+    { icon: Shield, label: "Budget utilization", value: `${utilization}%`, sub: "Across active sandboxes", tone: "magenta" },
   ];
+  const iconTones: Record<string, string> = {
+    orange: "bg-accent text-white",
+    cyan: "bg-brand-cyan text-[#161616]",
+    lime: "bg-brand-lime text-[#161616]",
+    magenta: "bg-brand-magenta text-white",
+  };
 
   if (isLoading) {
     return (
@@ -59,13 +65,18 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h2 className="text-2xl font-bold text-foreground">Welcome back, {firstName}</h2>
-        <p className="mt-1 text-muted">Here&apos;s what&apos;s happening with your sandboxes.</p>
+      <div className="pb-1">
+        <p className="mb-2 text-xs font-bold tracking-[0.18em] text-accent uppercase">
+          Sandbox workspace
+        </p>
+        <h2 className="text-3xl font-bold text-foreground">
+          {firstName ? `Welcome back, ${firstName}` : "Your sandbox overview"}
+        </h2>
+        <p className="mt-2 text-muted">A clear view of your environments, requests and spend.</p>
       </div>
 
       {expiringSoon && (
-        <div className="flex items-center gap-3 rounded-2xl border border-amber-500/30 bg-amber-500/10 px-5 py-4 text-sm text-amber-800 dark:text-amber-300">
+        <div className="flex items-center gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-5 py-4 text-sm text-amber-800 dark:text-amber-300">
           <AlertTriangle size={18} className="shrink-0" />
           <p>
             <span className="font-semibold">{expiringSoon.name}</span> expires in{" "}
@@ -82,13 +93,15 @@ export default function DashboardPage() {
 
       {/* Stat cards */}
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        {stats.map(({ icon: Icon, label, value, sub }) => (
+        {stats.map(({ icon: Icon, label, value, sub, tone }) => (
           <div key={label} className="rounded-card border border-border bg-surface p-5 shadow-card">
-            <div className="flex items-center gap-2 text-sm text-muted">
-              <Icon size={16} className="text-accent" />
-              {label}
+            <div className="flex items-center gap-3">
+              <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full ${iconTones[tone]}`}>
+                <Icon size={17} />
+              </span>
+              <span className="text-sm font-medium text-muted">{label}</span>
             </div>
-            <p className="mt-3 text-3xl font-bold text-foreground">{value}</p>
+            <p className="mt-4 break-words text-2xl font-bold text-foreground">{value}</p>
             <p className="mt-1 text-sm text-muted">{sub}</p>
           </div>
         ))}

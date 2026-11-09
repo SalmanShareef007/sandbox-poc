@@ -5,3 +5,5 @@ export default function LoginLayout({
 }) {
   return <>{children}</>;
 }
+
+export const instant = false;

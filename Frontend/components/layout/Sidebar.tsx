@@ -54,15 +54,17 @@ export default function Sidebar() {
   return (
     <aside className="sticky top-0 hidden h-screen w-64 shrink-0 flex-col border-r border-border bg-surface p-4 md:flex">
       <div className="px-2 py-4">
-        <Image
-          src={LOGO_SRC}
-          alt="S&MXencia"
-          width={160}
-          height={44}
-          priority
-          className="h-10 w-auto"
-          style={{ width: "auto" }}
-        />
+        <div className="inline-flex max-w-full items-center bg-white px-2 py-2">
+          <Image
+            src={LOGO_SRC}
+            alt="S&MXencia"
+            width={160}
+            height={44}
+            priority
+            className="h-9 w-auto"
+            style={{ width: "auto" }}
+          />
+        </div>
       </div>
 
       <NavSections />

@@ -13,7 +13,7 @@ const getTheme = () =>
   document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark";
 
 export default function ThemeToggle() {
-  const theme = useSyncExternalStore(subscribe, getTheme, () => "dark");
+  const theme = useSyncExternalStore(subscribe, getTheme, () => "light");
 
   const toggle = () => {
     const next = theme === "dark" ? "light" : "dark";
