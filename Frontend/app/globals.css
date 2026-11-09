@@ -1,0 +1,75 @@
+@import "tailwindcss";
+
+/* lets Tailwind's dark: prefix follow our data-theme attribute */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+/* Dark is the default */
+:root {
+  --background: #121212;
+  --foreground: #f5f5f5;
+
+  --surface: #1e1e20;
+  --surface-2: #28282b;
+  --border: #333338;
+  --muted: #9a9aa0;
+
+  --accent: #ff7a00;
+  --accent-light: #ff9a3d;
+  --accent-dark: #ff5a00;
+  --cream: #f6efe6;
+
+  --card-shadow: 0 20px 40px rgba(0, 0, 0, 0.45);
+}
+
+/* Light overrides */
+[data-theme="light"] {
+  --background: #f6f3ee;
+  --foreground: #1a1a1c;
+
+  --surface: #ffffff;
+  --surface-2: #f0ece6;
+  --border: #e3ded6;
+  --muted: #6b6b72;
+
+  --card-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-border: var(--border);
+
+  --color-accent: var(--accent);
+  --color-accent-light: var(--accent-light);
+  --color-accent-dark: var(--accent-dark);
+
+  --color-cream: var(--cream);
+  --color-muted: var(--muted);
+
+  --radius-card: 24px;
+  --shadow-card: var(--card-shadow);
+  --shadow-accent: 0 10px 30px rgba(255, 122, 0, 0.35);
+
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+.bg-accent-gradient {
+  background: linear-gradient(135deg, var(--accent-light) 0%, var(--accent-dark) 100%);
+}
+
+/* No rounded corners anywhere */
+*,
+*::before,
+*::after {
+  border-radius: 0 !important;
+}

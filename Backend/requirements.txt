@@ -1,0 +1,36 @@
+
+# FastAPI application
+fastapi
+
+# ASGI server
+uvicorn[standard]
+
+# Data validation and configuration
+pydantic
+pydantic-settings
+python-dotenv
+email-validator
+
+# PostgreSQL and ORM
+sqlalchemy
+psycopg[binary]
+alembic
+
+# HTTP requests and API integrations
+httpx
+
+# Microsoft Entra ID authentication
+PyJWT[crypto]
+msal
+
+# Azure authentication and email
+azure-identity
+azure-communication-email
+
+# Testing
+pytest
+pytest-asyncio
+httpx
+
+# Code quality
+ruff
