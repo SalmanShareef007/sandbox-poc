@@ -1,10 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import Image from "next/image";
 import { usePathname } from "next/navigation";
 import { Menu, X } from "lucide-react";
-import LOGO_SRC from "@/public/assets/S&MXencia.png";
 import { NavSections } from "@/components/layout/Sidebar";
 
 export default function MobileNav() {
@@ -50,14 +48,7 @@ export default function MobileNav() {
           }`}
         >
           <div className="flex items-center justify-between px-2 py-4">
-            <Image
-              src={LOGO_SRC}
-              alt="S&MXencia"
-              width={160}
-              height={44}
-              className="h-10 w-auto"
-              style={{ width: "auto" }}
-            />
+            <p className="text-lg font-bold text-foreground">Azure Sandbox</p>
             <button
               onClick={close}
               aria-label="Close menu"

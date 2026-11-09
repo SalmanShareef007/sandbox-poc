@@ -1,13 +1,11 @@
 "use client";
 
 import { useEffect } from "react";
-import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { InteractionStatus } from "@azure/msal-browser";
 import { Check, GitBranch, IndianRupee, Lock, Shield } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { useRole } from "@/hooks/useRole";
-import LOGO_SRC from "@/public/assets/S&MXencia.png";
 
 const features = [
   {
@@ -47,20 +45,7 @@ export default function LoginClient() {
     <main className="grid min-h-screen lg:grid-cols-[1.05fr_0.95fr]">
       <section className="hidden flex-col justify-between bg-[#161616] px-7 py-8 sm:px-12 lg:flex lg:px-14 lg:py-12">
         <div className="flex flex-wrap items-center justify-between gap-5">
-          <div className="inline-flex items-center bg-white px-2 py-2">
-            <Image
-              src={LOGO_SRC}
-              alt="S&MXencia"
-              width={180}
-              height={48}
-              priority
-              className="h-9 w-auto"
-              style={{ width: "auto" }}
-            />
-          </div>
-          <p className="text-[11px] font-bold tracking-[0.18em] text-accent uppercase">
-            Saints &amp; Masters × Xencia
-          </p>
+          <p className="text-lg font-bold text-white">Azure Sandbox</p>
         </div>
 
         <div className="my-12 max-w-xl">
@@ -114,16 +99,7 @@ export default function LoginClient() {
       <section className="flex min-h-[50vh] items-center justify-center bg-surface px-6 py-12 lg:min-h-screen">
         <div className="w-full max-w-md">
           <div className="mb-10 lg:hidden">
-            <div className="inline-flex items-center bg-white px-2 py-2">
-              <Image
-                src={LOGO_SRC}
-                alt="S&MXencia"
-                width={160}
-                height={44}
-                className="h-9 w-auto"
-                style={{ width: "auto" }}
-              />
-            </div>
+            <p className="text-lg font-bold text-foreground">Azure Sandbox</p>
           </div>
 
           <p className="text-xs font-bold tracking-[0.18em] text-accent uppercase">

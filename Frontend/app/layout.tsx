@@ -9,8 +9,8 @@ const montserrat = Montserrat({
 });
 
 export const metadata: Metadata = {
-  title: "Sandbox UI",
-  description: "MSAL auth sandbox",
+  title: "Azure Sandbox",
+  description: "Governed Azure sandbox workspace",
 };
 export const instant = false;
 

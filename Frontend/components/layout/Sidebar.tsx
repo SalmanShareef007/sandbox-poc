@@ -1,9 +1,7 @@
 "use client";
 
-import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import LOGO_SRC from "@/public/assets/S&MXencia.png";
 import { isActivePath, navSections, type NavItemDef } from "@/components/layout/navItems";
 import { useRole } from "@/hooks/useRole";
 
@@ -54,16 +52,11 @@ export default function Sidebar() {
   return (
     <aside className="sticky top-0 hidden h-screen w-64 shrink-0 flex-col border-r border-border bg-surface p-4 md:flex">
       <div className="px-2 py-4">
-        <div className="inline-flex max-w-full items-center bg-white px-2 py-2">
-          <Image
-            src={LOGO_SRC}
-            alt="S&MXencia"
-            width={160}
-            height={44}
-            priority
-            className="h-9 w-auto"
-            style={{ width: "auto" }}
-          />
+        <div className="flex items-center gap-3 px-2 py-2">
+          <span aria-hidden="true" className="h-9 w-1.5 bg-accent" />
+          <span className="text-lg leading-tight font-bold text-foreground">
+            Azure Sandbox
+          </span>
         </div>
       </div>
 

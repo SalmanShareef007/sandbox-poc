@@ -3,7 +3,7 @@
 /* lets Tailwind's dark: prefix follow our data-theme attribute */
 @custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
 
-/* Saints & Masters x Xencia brand palette */
+/* Azure Sandbox palette */
 :root {
   --background: #f7f7f7;
   --foreground: #161616;
