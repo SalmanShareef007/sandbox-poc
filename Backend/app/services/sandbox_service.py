@@ -3,8 +3,10 @@ import logging
 import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable
+from uuid import uuid4
 
 from app.core.config import settings
+from app.services.subscription_service import selection, subscription_id
 from app.core.security import user_email
 from app.repositories.extension_repository import (
     DecommissionRequestRepository,
@@ -53,7 +55,7 @@ def now_iso() -> str:
 
 
 def today() -> date:
-    return date.today()
+    return datetime.now(timezone.utc).date()
 
 
 def format_date(value: str | date | None) -> str | None:
@@ -76,7 +78,7 @@ def resource_group_name(sandbox_id: str) -> str:
 
 def resource_group_id(sandbox_id: str) -> str:
     return (
-        f"/subscriptions/{settings.AZURE_SUBSCRIPTION_ID}"
+        f"/subscriptions/{subscription_id()}"
         f"/resourceGroups/{resource_group_name(sandbox_id)}"
     )
 
@@ -95,7 +97,13 @@ def update_request(
         if history:
             updates["history"] = [*current.get("history", []), *history]
 
-        return SandboxRequestRepository.update(request_id, updates)
+        updated = SandboxRequestRepository.update(request_id, updates)
+        if history:
+            from app.services.notification_service import publish
+
+            entry = history[-1]
+            publish(updated, f"history:{request_id}:{entry['at']}:{entry['status']}", f"{updated['reference']}: {entry['status']} - {entry['note']}")
+        return updated
 
 
 def get_request_or_404(reference: str) -> dict[str, Any]:
@@ -108,11 +116,10 @@ def get_request_or_404(reference: str) -> dict[str, Any]:
 
 
 def is_owner(request: dict[str, Any], claims: dict) -> bool:
-    email = user_email(claims).lower()
-
     return (
-        request.get("user_id") == claims.get("oid")
-        or (email != "" and str(request.get("requestor_email", "")).lower() == email)
+        bool(claims.get("oid"))
+        and request.get("user_id") == claims.get("oid")
+        and request.get("tenant_id") == claims.get("tid")
     )
 
 
@@ -120,9 +127,9 @@ def _slug(value: str, length: int) -> str:
     return re.sub(r"[^a-z0-9]", "", value.lower())[:length]
 
 
-def generate_sandbox_id(business_unit: str, requestor_name: str) -> str:
+def generate_sandbox_id(business_unit: str, requestor_name: str, short_code: str | None = None) -> str:
     """Builds a Terraform-safe key such as `eng-salman-001`."""
-    unit = _slug(business_unit, 3) or "sbx"
+    unit = short_code or _slug(business_unit, 3) or "sbx"
     first_name = _slug((requestor_name or "").split(" ")[0], 12) or "user"
     prefix = f"{unit}-{first_name}"
 
@@ -172,6 +179,9 @@ def to_view(
     sandbox_id = request["sandbox_id"]
     has_expiry = request.get("status") not in ("pending", "rejected")
     expiry_date = request.get("expiry_date")
+    cost = request.get("cost") or {}
+    current_month = datetime.now(timezone.utc).strftime("%Y-%m")
+    cost_current = cost.get("month") == current_month
 
     return {
         "id": request["reference"],
@@ -181,12 +191,20 @@ def to_view(
         "type": "Resource Group",
         "status": status,
         "businessUnit": request["business_unit"],
+        "businessUnitCode": request.get("business_unit_code"),
+        "subscriptionId": request.get("subscription_id") or subscription_id(),
         "costCenter": request["cost_center"],
         "budget": request["monthly_budget"],
-        "spent": 0,
+        "spent": cost.get("amount") if cost_current else None,
+        "spendHistory": cost.get("history") if cost_current else None,
+        "costCurrency": cost.get("currency", settings.BUDGET_CURRENCY),
+        "costUpdatedAt": cost.get("updated_at"),
+        "costStatus": "unavailable" if not cost_current else "stale" if request.get("cost_error") else "available",
+        "budgetCurrency": settings.BUDGET_CURRENCY,
         "region": request.get("location") or DEFAULT_LOCATION,
         "role": request.get("role", "Contributor"),
         "owner": request["owner"],
+        "managerEmail": request.get("manager_email"),
         "tags": {
             "Owner": request["owner"],
             "BusinessUnit": request["business_unit"],
@@ -194,6 +212,7 @@ def to_view(
             "Environment": settings.TERRAFORM_ENVIRONMENT,
             "ExpiryDate": expiry_date or "",
             "ManagedBy": "Sandbox-POC",
+            **({"Manager": request["manager_email"]} if request.get("manager_email") else {}),
         },
         "history": [
             {"status": h["status"], "date": format_date(h["at"]), "note": h["note"]}
@@ -216,6 +235,10 @@ def to_view(
         "requestedOn": format_date(request.get("created_at")),
         "durationDays": request.get("duration_days"),
         "operationInProgress": request.get("operation_in_progress"),
+        "pendingExpiry": format_date(request.get("pending_expiry_date")),
+        "expiryDate": expiry_date,
+        "cleanupFlagged": bool(decommission and decommission.get("status") == "approved"),
+        "cleanupEligibleOn": decommission.get("cleanup_not_before") if decommission else None,
         "decommissionPending": bool(decommission),
         "decommissionReason": decommission.get("reason") if decommission else None,
         "decommissionRequestedBy": (
@@ -233,6 +256,7 @@ def extension_view(extension: dict[str, Any]) -> dict[str, Any]:
         "requestorName": extension["requestor_name"],
         "requestorEmail": extension["requestor_email"],
         "extraDays": extension["extra_days"],
+        "requestedExpiry": extension.get("requested_expiry_date"),
         "reason": extension["reason"],
         "requestedOn": format_date(extension["created_at"]),
         "status": extension["status"].title(),
@@ -245,7 +269,7 @@ def _pending_decommissions() -> dict[str, dict[str, Any]]:
     return {
         item["sandbox_reference"]: item
         for item in DecommissionRequestRepository.get_all()
-        if item.get("status") == "pending"
+        if item.get("status") in ("pending", "approved")
     }
 
 
@@ -292,6 +316,7 @@ def view_by_reference(reference: str) -> dict[str, Any]:
 # Requestor actions
 # --------------------------------------------------
 
+@JSONStorageService.lock()
 def create_request(payload: Any, claims: dict) -> dict[str, Any]:
     email = user_email(claims)
 
@@ -299,19 +324,29 @@ def create_request(payload: Any, claims: dict) -> dict[str, Any]:
         raise SandboxError("Your token has no user ID or email address.", 400)
 
     requestor_name = claims.get("name") or email
+    if selection().get("requestedSubscriptionId"):
+        raise SandboxError("A subscription change is awaiting worker validation. Submit the request after it completes.", 409)
+    from app.services.catalog_service import validate_selection
+
+    business_unit = validate_selection(payload.business_unit, payload.cost_center)
 
     with JSONStorageService.lock():
-        sandbox_id = generate_sandbox_id(payload.business_unit, requestor_name)
+        short_code = business_unit["shortCode"] if business_unit else None
+        sandbox_id = generate_sandbox_id(payload.business_unit, requestor_name, short_code)
 
         request = SandboxRequestRepository.create({
             "sandbox_id": sandbox_id,
+            "subscription_id": subscription_id(),
             "sandbox_type": "Resource Group",
             "user_id": claims["oid"],
+            "tenant_id": claims["tid"],
             "principal_id": claims["oid"],
             "owner": email,
+            "manager_email": str(payload.manager_email),
             "requestor_name": requestor_name,
             "requestor_email": email,
             "business_unit": payload.business_unit,
+            "business_unit_code": short_code,
             "cost_center": payload.cost_center,
             "workload": payload.workload,
             "description": payload.description,
@@ -332,21 +367,33 @@ def create_request(payload: Any, claims: dict) -> dict[str, Any]:
         claims["oid"], "sandbox_requested", "sandbox_request", request["reference"],
         {"sandbox_id": sandbox_id, "role": payload.role, "region": payload.region},
     )
+    from app.services.notification_service import publish
+
+    publish(request, f"submitted:{request['request_id']}", f"{request['reference']}: request submitted for approval.")
+    publish(request, f"submitted-admin:{request['request_id']}", f"{request['reference']}: sandbox request awaiting approval.", admins=True)
 
     return to_view(request)
 
 
+@JSONStorageService.lock()
 def request_extension(reference: str, payload: Any, claims: dict) -> dict[str, Any]:
     request = get_request_or_404(reference)
 
     if not is_owner(request, claims):
         raise SandboxError("You can only extend your own sandboxes.", 403)
 
-    if request["status"] != "active":
+    if request["status"] != "active" or request.get("operation_in_progress") or request.get("failed_operation"):
         raise SandboxError("Only active sandboxes can be extended.", 409)
 
     if ExtensionRequestRepository.get_pending_for_sandbox(reference):
         raise SandboxError("An extension request is already pending for this sandbox.", 409)
+
+    current_expiry = date.fromisoformat(request["expiry_date"])
+    requested_expiry = getattr(payload, "requested_expiry_date", None)
+    requested_expiry = requested_expiry or (current_expiry + timedelta(days=payload.extra_days))
+    extra_days = (requested_expiry - current_expiry).days
+    if extra_days <= 0 or extra_days > settings.MAX_EXTENSION_DAYS or requested_expiry <= today():
+        raise SandboxError(f"Requested expiry must be in the future and at most {settings.MAX_EXTENSION_DAYS} days after the existing expiry.")
 
     extension = ExtensionRequestRepository.create({
         "sandbox_reference": reference,
@@ -355,23 +402,25 @@ def request_extension(reference: str, payload: Any, claims: dict) -> dict[str, A
         "requestor_name": request.get("requestor_name") or request["owner"],
         "requestor_email": request.get("requestor_email") or request["owner"],
         "requested_by": user_email(claims),
-        "extra_days": payload.extra_days,
+        "extra_days": extra_days,
+        "requested_expiry_date": requested_expiry.isoformat(),
         "reason": payload.reason,
     })
 
     update_request(
         request["request_id"], {},
-        history_entry("Extension requested", f"+{payload.extra_days} days: {payload.reason}"),
+        history_entry("Extension requested", f"Expiry requested: {requested_expiry.isoformat()}: {payload.reason}"),
     )
 
     AuditService.log_action(
         claims["oid"], "extension_requested", "extension_request", extension["reference"],
-        {"sandbox": reference, "extra_days": payload.extra_days},
+        {"sandbox": reference, "extra_days": extra_days},
     )
 
     return extension_view(extension)
 
 
+@JSONStorageService.lock()
 def request_decommission(reference: str, reason: str, claims: dict) -> dict[str, Any]:
     from app.core.security import is_admin
 
@@ -380,16 +429,17 @@ def request_decommission(reference: str, reason: str, claims: dict) -> dict[str,
     if not (is_owner(request, claims) or is_admin(claims)):
         raise SandboxError("You can only decommission your own sandboxes.", 403)
 
-    if request["status"] != "active":
+    if request["status"] != "active" or request.get("operation_in_progress"):
         raise SandboxError("Only active sandboxes can be decommissioned.", 409)
 
-    if DecommissionRequestRepository.get_pending_for_sandbox(reference):
+    if reference in _pending_decommissions():
         raise SandboxError("A decommission request is already pending for this sandbox.", 409)
 
     decommission = DecommissionRequestRepository.create({
         "sandbox_reference": reference,
         "sandbox_id": request["sandbox_id"],
         "requested_by": user_email(claims),
+        "requested_by_user_id": claims["oid"],
         "reason": reason,
     })
 
@@ -406,6 +456,22 @@ def request_decommission(reference: str, reason: str, claims: dict) -> dict[str,
     return view_by_reference(reference)
 
 
+@JSONStorageService.lock()
+def queue_decommission(request: dict, actor: str) -> None:
+    if request["status"] != "active" or request.get("operation_in_progress"):
+        raise SandboxError("The sandbox is busy or not active.", 409)
+    if ExtensionRequestRepository.get_pending_for_sandbox(request["reference"]):
+        raise SandboxError("Decide the pending extension before queuing cleanup.", 409)
+    SandboxRepository.update(request["sandbox_id"], {"status": "decommissioning"})
+    update_request(
+        request["request_id"],
+        {"status": "decommissioning", "operation_id": str(uuid4()), "failed_operation": None, "last_error": None},
+        history_entry("Decommissioning", f"Approved cleanup queued by {actor}"),
+    )
+    AuditService.log_action(actor, "cleanup_queued", "sandbox", request["reference"])
+    schedule_job(request["reference"], "decommission")
+
+
 # --------------------------------------------------
 # Terraform jobs
 # --------------------------------------------------
@@ -420,7 +486,8 @@ def _record_failure(
     output = getattr(exc, "output", "") or str(exc)
     write_job_log(request["reference"], operation, output)
 
-    SandboxRepository.update(request["sandbox_id"], {"status": "failed"})
+    status = "active" if operation == "extension" else status
+    SandboxRepository.update(request["sandbox_id"], {"status": status})
     update_request(
         request["request_id"],
         {
@@ -485,18 +552,23 @@ def run_extension_apply(reference: str) -> None:
         _record_failure(request, "extension", exc)
         return
 
-    SandboxRepository.update(request["sandbox_id"], {"status": "active"})
+    expiry_date = request.get("pending_expiry_date") or request["expiry_date"]
+    SandboxRepository.update(request["sandbox_id"], {
+        "status": "active", "expiry_date": expiry_date, "pending_expiry_date": None,
+    })
     update_request(
         request["request_id"],
         {
             "status": "active",
             "operation_in_progress": None,
+            "expiry_date": expiry_date,
+            "pending_expiry_date": None,
             "failed_operation": None,
             "last_error": None,
         },
         history_entry(
             "Extension applied",
-            f"ExpiryDate tag updated to {request['expiry_date']}",
+            f"ExpiryDate tag updated to {expiry_date}",
         ),
     )
     AuditService.log_action("system", "extension_applied", "sandbox", reference)
@@ -518,20 +590,24 @@ def _job_runner(operation: str) -> Callable[[str], None]:
 
 
 def schedule_job(reference: str, operation: str) -> None:
-    runner = _job_runner(operation)
-    TerraformJobQueue.submit(reference, lambda: runner(reference))
+    with JSONStorageService.lock():
+        request = get_request_or_404(reference)
+        operation_id = request.get("operation_id") or str(uuid4())
+        update_request(request["request_id"], {"operation_id": operation_id})
+        TerraformJobQueue.submit(reference, operation, operation_id)
 
 
+@JSONStorageService.lock()
 def retry(reference: str, claims: dict) -> dict[str, Any]:
     request = get_request_or_404(reference)
 
-    if request["status"] != "failed":
+    if request["status"] != "failed" and not (request["status"] == "active" and request.get("failed_operation") == "extension"):
         raise SandboxError("Only failed sandboxes can be retried.", 409)
 
     operation = request.get("failed_operation") or "provision"
     admin = user_email(claims)
 
-    updates: dict[str, Any] = {"last_error": None}
+    updates: dict[str, Any] = {"last_error": None, "failed_operation": None, "operation_id": str(uuid4())}
 
     if operation == "provision":
         updates["status"] = "provisioning"
@@ -581,7 +657,8 @@ def import_existing_sandboxes() -> int:
             SandboxRequestRepository.create({
                 "sandbox_id": sandbox["sandbox_id"],
                 "sandbox_type": "Resource Group",
-                "user_id": None,
+                "user_id": sandbox["principal_id"],
+                "tenant_id": settings.ENTRA_TENANT_ID,
                 "principal_id": sandbox["principal_id"],
                 "owner": owner,
                 "requestor_name": owner.split("@")[0].replace(".", " ").title(),

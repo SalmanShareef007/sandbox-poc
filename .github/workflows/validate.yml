@@ -1,0 +1,90 @@
+name: Validate
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        database: [sqlite, postgresql]
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: sandbox
+          POSTGRES_PASSWORD: local-test-only
+          POSTGRES_DB: sandbox_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U sandbox -d sandbox_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      TEST_DATABASE_URL: ${{ matrix.database == 'postgresql' && 'postgresql+psycopg://sandbox:local-test-only@localhost:5432/sandbox_test' || '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: Backend/requirements.txt
+      - run: pip install -r Backend/requirements.txt
+      - run: ruff check Backend/app Backend/tests
+      - run: python -m pytest Backend/tests -q
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: Frontend/package-lock.json
+      - run: npm --prefix Frontend ci
+      - run: npm --prefix Frontend run lint
+      - run: npm --prefix Frontend run build
+  terraform:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.17.1
+      - run: terraform -chdir=Terraform/environments/dev init -backend=false -input=false
+      - run: terraform -chdir=Terraform/environments/dev validate -no-color
+      - run: terraform -chdir=Terraform/environments/dev test -test-directory=tests -no-color
+  containers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -f Backend/Dockerfile --target api -t sandbox-api .
+      - run: docker build -f Backend/Dockerfile --target worker -t sandbox-worker .
+      - run: >-
+          docker build -t sandbox-ui
+          --build-arg NEXT_PUBLIC_CLIENT_ID=00000000-0000-0000-0000-000000000000
+          --build-arg NEXT_PUBLIC_TENANT_ID=00000000-0000-0000-0000-000000000000
+          --build-arg NEXT_PUBLIC_REDIRECT_URI=https://ui.example.com/login
+          --build-arg NEXT_PUBLIC_API_SCOPE=api://00000000-0000-0000-0000-000000000000/access_as_user
+          --build-arg NEXT_PUBLIC_API_BASE_URL=https://api.example.com
+          Frontend
+      - uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: sandbox-api
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'
+      - uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: sandbox-worker
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'
+      - uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: sandbox-ui
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'

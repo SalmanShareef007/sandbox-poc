@@ -1,4 +1,4 @@
-import type { SandboxStatus } from "@/lib/demoData";
+import type { SandboxStatus } from "@/lib/types";
 
 const styles: Record<SandboxStatus, string> = {
   Active: "bg-emerald-500/10 text-emerald-700 border-emerald-500/30 dark:text-emerald-400",

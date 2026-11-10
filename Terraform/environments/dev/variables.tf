@@ -1,4 +1,9 @@
 
+variable "subscription_id" {
+  description = "Dedicated sandbox subscription ID"
+  type        = string
+}
+
 variable "location" {
   description = "Azure region where sandbox resources will be created"
   type        = string
@@ -21,8 +26,10 @@ variable "sandboxes" {
     cost_center    = string
     monthly_budget = number
     expiry_date    = string
+    budget_start_date = string
     role           = string
     location       = optional(string)
+    manager_email  = optional(string)
   }))
 
   default = {}
@@ -39,10 +46,10 @@ variable "sandboxes" {
   validation {
     condition = alltrue([
       for sandbox in values(var.sandboxes) :
-      contains(["Reader", "Contributor", "Owner"], sandbox.role)
+      contains(["Reader", "Contributor", "Owner", "Sandbox Contributor"], sandbox.role)
     ])
 
-    error_message = "Sandbox roles must be Reader, Contributor, or Owner."
+    error_message = "Sandbox role is not supported. New requests use Sandbox Contributor; other roles are legacy inventory only."
   }
 
   validation {
@@ -85,5 +92,24 @@ variable "sandboxes" {
     ])
 
     error_message = "Owner, business unit, and cost center cannot be empty."
+  }
+}
+
+variable "budget_alert_emails" {
+  description = "Administrator recipients copied on native Azure budget notifications"
+  type        = list(string)
+  default     = []
+  validation {
+    condition     = length(var.budget_alert_emails) <= 4
+    error_message = "Use at most four administrator contacts; use a distribution address for larger teams."
+  }
+}
+
+variable "budget_alert_thresholds" {
+  type    = list(number)
+  default = [75, 90, 100]
+  validation {
+    condition     = length(var.budget_alert_thresholds) > 0 && length(var.budget_alert_thresholds) <= 5 && alltrue([for threshold in var.budget_alert_thresholds : threshold > 0 && threshold <= 100])
+    error_message = "Configure one to five thresholds above zero and at most 100."
   }
 }

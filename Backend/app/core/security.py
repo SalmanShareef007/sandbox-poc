@@ -60,6 +60,19 @@ async def get_current_user(
         if not claims.get("oid"):
             raise InvalidTokenError("Object ID is missing.")
 
+        scopes = str(claims.get("scp", "")).split()
+        if settings.ENTRA_REQUIRED_SCOPE not in scopes:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="The required delegated API scope is missing.",
+            )
+
+        if settings.ENTRA_ALLOWED_CLIENT_IDS and claims.get("azp") not in settings.ENTRA_ALLOWED_CLIENT_IDS:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="This client application is not authorized.",
+            )
+
         return claims
 
     except (InvalidTokenError, PyJWKClientError, ValueError):
@@ -67,7 +80,7 @@ async def get_current_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired access token.",
             headers={"WWW-Authenticate": "Bearer"},
-        )
+        ) from None
 
 
 def user_email(claims: dict) -> str:
@@ -80,7 +93,8 @@ def user_email(claims: dict) -> str:
 
 
 def is_admin(claims: dict) -> bool:
-    return settings.ADMIN_ROLE in (claims.get("roles") or [])
+    roles = claims.get("roles")
+    return isinstance(roles, list) and settings.ADMIN_ROLE in roles
 
 
 async def require_admin(current_user: dict = Depends(get_current_user)) -> dict:

@@ -1,21 +1,9 @@
 "use client";
 
-import { useMemo } from "react";
-import { useAuth } from "@/hooks/useAuth";
-import { ADMIN_ROLE } from "@/config/roles";
+import { createContext, useContext } from "react";
 
-const isStringArray = (value: unknown): value is string[] =>
-  Array.isArray(value) && value.every((v) => typeof v === "string");
+export const RoleContext = createContext({ roles: [] as string[], isAdmin: false, ready: false, budgetCurrency: "INR" });
 
 export function useRole() {
-  const { account } = useAuth();
-  const rawRoles: unknown = account?.idTokenClaims?.roles;
-
-  const roles = useMemo(() => (isStringArray(rawRoles) ? rawRoles : []), [rawRoles]);
-
-  return {
-    roles,
-    isAdmin: roles.includes(ADMIN_ROLE),
-    ready: account !== null,
-  };
+  return useContext(RoleContext);
 }

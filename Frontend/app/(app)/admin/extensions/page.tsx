@@ -12,7 +12,7 @@ import { useSandboxes } from "@/components/providers/SandboxProvider";
 import { useToast } from "@/components/providers/ToastProvider";
 import { useAuth } from "@/hooks/useAuth";
 import { addDays, formatDemoDate, parseDemoDate } from "@/lib/dates";
-import type { ExtensionRequest, ExtensionStatus } from "@/lib/demoData";
+import type { ExtensionRequest, ExtensionStatus } from "@/lib/types";
 
 type TabKey = "pending" | "decided";
 
@@ -78,7 +78,7 @@ export default function ExtensionsPage() {
           {rows.map((e) => {
             const isOwn = sameEmail(e.requestorEmail, account?.username);
             const currentExpiry = expiryFor(e.sandboxId);
-            const newExpiry = extendedExpiry(currentExpiry, e.extraDays);
+            const newExpiry = e.requestedExpiry ?? extendedExpiry(currentExpiry, e.extraDays);
 
             return (
               <article

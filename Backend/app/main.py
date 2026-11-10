@@ -6,8 +6,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
  
 from app.api.router import api_router
-from app.core.config import settings
-from app.services import sandbox_service
+from app.core.config import settings, validate_hosting_configuration
+from app.db.database import check_database, initialize_database, is_production
 from app.services.sandbox_service import SandboxError
  
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -16,18 +16,14 @@ logger = logging.getLogger(__name__)
  
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    from app.integrations.terraform import service_principal_configured
- 
-    if service_principal_configured():
-        logger.info("Terraform identity: service principal %s", settings.ARM_CLIENT_ID)
-    else:
-        logger.info("Terraform identity: this machine's az login (no ARM_* settings found)")
- 
-    imported = sandbox_service.import_existing_sandboxes()
-    if imported:
-        logger.info("Imported %s existing sandbox(es) from sandboxes.json", imported)
- 
-    sandbox_service.recover_jobs()
+    validate_hosting_configuration()
+    if not is_production():
+        initialize_database()
+    check_database()
+    if settings.APPLICATIONINSIGHTS_CONNECTION_STRING:
+        from azure.monitor.opentelemetry import configure_azure_monitor
+
+        configure_azure_monitor(connection_string=settings.APPLICATIONINSIGHTS_CONNECTION_STRING.get_secret_value())
     yield
  
  
@@ -35,9 +31,9 @@ app = FastAPI(
     title="Azure Sandbox Platform API",
     description="Backend API for managing Azure sandbox provisioning, approvals, budgets, and lifecycle operations.",
     version="1.0.0",
-    docs_url="/docs",
-    redoc_url="/redoc",
-    openapi_url="/openapi.json",
+    docs_url="/docs" if not is_production() else None,
+    redoc_url="/redoc" if not is_production() else None,
+    openapi_url="/openapi.json" if not is_production() else None,
     lifespan=lifespan,
 )
  

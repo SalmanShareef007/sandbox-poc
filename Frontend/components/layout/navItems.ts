@@ -2,12 +2,14 @@ import {
   Bell,
   Box,
   Boxes,
+  Building2,
   CalendarClock,
   CircleQuestionMark,
   ClipboardCheck,
   Home,
   LayoutDashboard,
   Plus,
+  Settings,
   Wallet,
   type LucideIcon,
 } from "lucide-react";
@@ -44,6 +46,8 @@ export const adminNav: NavItemDef[] = [
   { href: "/admin/extensions", label: "Extensions", icon: CalendarClock },
   { href: "/admin/sandboxes", label: "All sandboxes", icon: Boxes },
   { href: "/admin/costs", label: "Costs", icon: Wallet },
+  { href: "/admin/business-units", label: "Business units", icon: Building2 },
+  { href: "/admin/settings", label: "Settings", icon: Settings },
 ];
 
 export const navSections = (isAdmin: boolean): NavSection[] =>

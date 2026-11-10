@@ -16,7 +16,7 @@ import {
 import EmptyState from "@/components/ui/EmptyState";
 import Skeleton from "@/components/ui/Skeleton";
 import { useSandboxes } from "@/components/providers/SandboxProvider";
-import { isLive, money, usedPct } from "@/components/admin/format";
+import { hasComparableCost, isLive, useMoney, usedPct } from "@/components/admin/format";
 import { parseDemoDate } from "@/lib/dates";
 
 interface Stat {
@@ -59,6 +59,7 @@ const kindStyles: Record<AttentionKind, { label: string; cls: string; icon: Luci
 const statCardCls = "block border border-border bg-surface p-5 shadow-card";
 
 export default function AdminOverviewPage() {
+  const money = useMoney();
   const { adminRequests: all, extensionRequests, isLoading } = useSandboxes();
 
   if (isLoading) {
@@ -87,10 +88,11 @@ export default function AdminOverviewPage() {
   const pendingExtensions = extensionRequests.filter((e) => e.status === "Pending");
   const active = all.filter((s) => s.status === "Active");
   const expiring = all.filter((s) => s.status === "Expiring");
-  const failed = all.filter((s) => s.status === "Failed");
+  const failed = all.filter((s) => s.status === "Failed" || s.failedOperation);
   const live = all.filter(isLive);
   const alerts = live.filter((s) => usedPct(s) >= 90);
-  const totalSpend = all.reduce((sum, s) => sum + s.spent, 0);
+  const costed = all.filter(hasComparableCost);
+  const totalSpend = costed.reduce((sum, s) => sum + s.spent, 0);
 
   const stats: Stat[] = [
     {
@@ -109,7 +111,7 @@ export default function AdminOverviewPage() {
     },
     { icon: ShieldCheck, label: "Active sandboxes", value: String(active.length), sub: "Running normally" },
     { icon: Hourglass, label: "Expiring soon", value: String(expiring.length), sub: "Within 7 days" },
-    { icon: IndianRupee, label: "Total spend", value: money(totalSpend), sub: "Across all sandboxes" },
+    { icon: IndianRupee, label: "Reported spend", value: money(costed.length ? totalSpend : null), sub: `${costed.length} of ${all.length} sandboxes reported` },
     { icon: AlertTriangle, label: "Budget alerts", value: String(alerts.length), sub: "At 90% of budget or more" },
   ];
 
@@ -141,7 +143,7 @@ export default function AdminOverviewPage() {
   ];
 
   const byUnit = Object.entries(
-    all.reduce<Record<string, number>>((acc, s) => {
+    costed.reduce<Record<string, number>>((acc, s) => {
       if (s.spent > 0) acc[s.businessUnit] = (acc[s.businessUnit] ?? 0) + s.spent;
       return acc;
     }, {})

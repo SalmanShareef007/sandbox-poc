@@ -5,14 +5,15 @@ import { Bell } from "lucide-react";
 import Skeleton from "@/components/ui/Skeleton";
 import EmptyState from "@/components/ui/EmptyState";
 import { useSandboxes } from "@/components/providers/SandboxProvider";
-import type { Notification } from "@/lib/demoData";
+import type { Notification } from "@/lib/types";
 
 type Tab = "All" | Notification["category"];
-const tabs: Tab[] = ["All", "Budget", "Approval"];
+const tabs: Tab[] = ["All", "Budget", "Approval", "Lifecycle"];
 
 const badgeStyles: Record<Notification["category"], string> = {
   Budget: "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-400",
   Approval: "border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-400",
+  Lifecycle: "border-cyan-500/30 bg-cyan-500/10 text-cyan-700 dark:text-cyan-400",
 };
 
 export default function NotificationsPage() {
@@ -79,7 +80,7 @@ export default function NotificationsPage() {
                 <p className="text-sm font-medium text-foreground">{n.title}</p>
                 <p className="mt-1 text-xs text-muted">To: {n.to}</p>
               </div>
-              <span className="shrink-0 text-xs text-muted">{n.when}</span>
+              <span className="shrink-0 text-xs text-muted">{new Date(n.when).toLocaleString()}</span>
             </li>
           ))}
         </ul>

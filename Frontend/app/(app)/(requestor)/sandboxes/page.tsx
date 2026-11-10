@@ -8,7 +8,8 @@ import StatusBadge from "@/components/ui/StatusBadge";
 import Skeleton from "@/components/ui/Skeleton";
 import EmptyState from "@/components/ui/EmptyState";
 import { useSandboxes } from "@/components/providers/SandboxProvider";
-import type { Sandbox, SandboxStatus } from "@/lib/demoData";
+import type { Sandbox, SandboxStatus } from "@/lib/types";
+import { hasComparableCost, useMoney, usedPct } from "@/components/admin/format";
 
 const tabs: ("All" | SandboxStatus)[] = [
   "All",
@@ -36,21 +37,13 @@ const sortOptions: { value: SortKey; label: string }[] = [
 const selectCls =
   "border border-border bg-background px-4 py-2.5 text-sm text-foreground focus:border-accent focus:outline-none";
 
-const budgetPct = (s: Sandbox) => (s.budget ? s.spent / s.budget : 0);
+const budgetPct = (s: Sandbox) => hasComparableCost(s) && s.budget ? s.spent / s.budget : -1;
 
 const comparators: Record<Exclude<SortKey, "default">, (a: Sandbox, b: Sandbox) => number> = {
   expiry: (a, b) => (a.daysLeft ?? Infinity) - (b.daysLeft ?? Infinity),
-  spend: (a, b) => b.spent - a.spent,
+  spend: (a, b) => (b.spent ?? -Infinity) - (a.spent ?? -Infinity),
   budgetPct: (a, b) => budgetPct(b) - budgetPct(a),
 };
-
-const money = (n: number, digits = 0) =>
-  n.toLocaleString("en-IN", {
-    style: "currency",
-    currency: "INR",
-    minimumFractionDigits: digits,
-    maximumFractionDigits: digits,
-  });
 
 function barColor(pct: number) {
   if (pct >= 90) return "bg-red-500";
@@ -59,6 +52,7 @@ function barColor(pct: number) {
 }
 
 export default function SandboxesPage() {
+  const money = useMoney();
   const router = useRouter();
   const { sandboxes, isLoading } = useSandboxes();
   const [tab, setTab] = useState<"All" | SandboxStatus>("All");
@@ -201,7 +195,7 @@ export default function SandboxesPage() {
           <tbody className="divide-y divide-border">
             {rows.map((s) => {
               const noSpend = s.status === "Pending" || s.status === "Rejected";
-              const pct = s.budget ? Math.round((s.spent / s.budget) * 100) : 0;
+              const pct = usedPct(s);
               return (
                 <tr
                   key={s.id}
@@ -230,6 +224,8 @@ export default function SandboxesPage() {
                   <td className="w-64 px-6 py-4">
                     {noSpend ? (
                       <span className="text-muted">{money(s.budget)} requested</span>
+                    ) : !hasComparableCost(s) ? (
+                      <span className="text-muted">Cost data unavailable</span>
                     ) : (
                       <>
                         <div className="h-2 overflow-hidden rounded-full bg-background">
@@ -245,7 +241,7 @@ export default function SandboxesPage() {
                     )}
                   </td>
                   <td className="px-6 py-4 text-right font-medium text-foreground">
-                    {money(s.spent, 2)}
+                    {money(s.spent, 2, s.costCurrency)}
                   </td>
                   <td className="px-6 py-4">
                     {s.expiry ? (

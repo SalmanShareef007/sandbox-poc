@@ -22,8 +22,8 @@ variable "role_definition_name" {
     condition = contains(
       ["Reader", "Contributor", "Owner"],
       var.role_definition_name
-    )
+    ) || can(regex("^Sandbox Contributor [A-Za-z0-9_-]+ [0-9a-fA-F]{8}$", var.role_definition_name))
 
-    error_message = "Allowed roles are Reader, Contributor, and Owner."
+    error_message = "Use the environment-scoped Sandbox Contributor role, or Reader, Contributor, and Owner for legacy inventory."
   }
 }

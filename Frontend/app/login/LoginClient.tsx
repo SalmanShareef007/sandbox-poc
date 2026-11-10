@@ -16,28 +16,28 @@ const features = [
   {
     icon: GitBranch,
     title: "Terraform-provisioned",
-    text: "GitHub pipelines create, tag and secure every sandbox with full traceability.",
+    text: "Approved jobs create, tag and secure resource groups through a dedicated worker.",
   },
   {
     icon: Shield,
     title: "Governed by default",
-    text: "Azure Policy, mandatory tags and RBAC isolation at the Sandbox Management Group.",
+    text: "Azure Policy, mandatory tags and resource-group-scoped Contributor access.",
   },
   {
     icon: IndianRupee,
     title: "Budget aware",
-    text: "₹500 default budget with 75 / 90 / 100% email alerts and expiry reminders.",
+    text: "Monthly budget alerts at 75 / 90 / 100% and tracked expiry reminders.",
   },
 ];
 
 export default function LoginClient() {
   const { isAuthenticated, inProgress, login } = useAuth();
   const router = useRouter();
-  const { isAdmin } = useRole();
+  const { isAdmin, ready } = useRole();
 
   useEffect(() => {
-    if (isAuthenticated) router.replace(isAdmin ? "/admin" : "/dashboard");
-  }, [isAuthenticated, isAdmin, router]);
+    if (isAuthenticated && ready) router.replace(isAdmin ? "/admin" : "/dashboard");
+  }, [isAuthenticated, isAdmin, ready, router]);
 
   const busy = inProgress !== InteractionStatus.None;
 
@@ -56,9 +56,8 @@ export default function LoginClient() {
             Governed Azure sandboxes, on demand.
           </h1>
           <p className="mt-5 max-w-lg text-base leading-relaxed text-[#b8b8b8]">
-            Request an isolated Azure subscription or resource group for
-            experimentation. Approval, provisioning, governance, budgets and
-            lifecycle are automated end-to-end.
+            Request an Azure resource group for experimentation with administrator
+            approval, provisioning, budget alerts and lifecycle tracking.
           </p>
 
           <ul className="mt-9 grid gap-x-8 gap-y-6 sm:grid-cols-2">

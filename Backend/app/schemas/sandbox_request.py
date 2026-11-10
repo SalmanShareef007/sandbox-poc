@@ -1,5 +1,5 @@
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 from pydantic.alias_generators import to_camel
 
 from app.core.config import settings
@@ -13,16 +13,28 @@ class CamelModel(BaseModel):
     )
 
 
+def validate_budget_amount(value: float) -> float:
+    if value > settings.MAX_SANDBOX_BUDGET:
+        raise ValueError(f"Budget must not exceed {settings.MAX_SANDBOX_BUDGET:g} {settings.BUDGET_CURRENCY}.")
+    return value
+
+
 class SandboxRequestCreate(CamelModel):
-    business_unit: str = Field(min_length=1, max_length=60)
-    cost_center: str = Field(min_length=1, max_length=40)
+    business_unit: str = Field(min_length=1, max_length=120)
+    cost_center: str = Field(min_length=1, max_length=80)
+    manager_email: EmailStr
     workload: str = Field(min_length=1, max_length=80)
     region: str
     role: str = "Contributor"
     description: str = Field(min_length=1, max_length=300)
     justification: str = Field(min_length=20, max_length=2000)
-    budget: float = Field(gt=0, le=100000)
+    budget: float = Field(gt=0, allow_inf_nan=False)
     duration_days: int
+
+    @field_validator("budget")
+    @classmethod
+    def budget_allowed(cls, value: float) -> float:
+        return validate_budget_amount(value)
 
     @field_validator("region")
     @classmethod
@@ -36,6 +48,8 @@ class SandboxRequestCreate(CamelModel):
     def role_allowed(cls, value: str) -> str:
         if value not in settings.ALLOWED_SANDBOX_ROLES:
             raise ValueError(f"Role must be one of: {', '.join(settings.ALLOWED_SANDBOX_ROLES)}")
+        if value == "Owner" and not settings.ALLOW_OWNER_ROLE_REQUESTS:
+            raise ValueError("Owner access has not been enabled by the platform administrator.")
         return value
 
     @field_validator("duration_days")

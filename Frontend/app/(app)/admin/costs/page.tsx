@@ -1,15 +1,12 @@
 "use client";
 
-import { useMemo, useState } from "react";
 import { Download, Wallet } from "lucide-react";
 import EmptyState from "@/components/ui/EmptyState";
 import Skeleton from "@/components/ui/Skeleton";
-import { barColor, hasApprovedBudget, money } from "@/components/admin/format";
+import { barColor, hasApprovedBudget, hasComparableCost, useMoney } from "@/components/admin/format";
+import { useRole } from "@/hooks/useRole";
 import { useSandboxes } from "@/components/providers/SandboxProvider";
 import { monthLabel } from "@/lib/dates";
-
-// Demo-only multipliers so earlier months show smaller, plausible totals.
-const MONTH_SCALE = [1, 0.84, 0.69];
 
 interface UnitRow {
   unit: string;
@@ -24,9 +21,6 @@ interface CostCentreRow {
   count: number;
   spend: number;
 }
-
-const selectCls =
-  "border border-border bg-background px-4 py-2.5 text-sm text-foreground focus:border-accent focus:outline-none";
 
 // Prefix cells that spreadsheet apps would treat as formulas.
 const csvCell = (value: string | number) => {
@@ -48,20 +42,14 @@ function downloadCsv(filename: string, rows: (string | number)[][]) {
 }
 
 export default function CostsPage() {
+  const money = useMoney();
+  const { budgetCurrency } = useRole();
   const { adminRequests: all, isLoading } = useSandboxes();
 
-  const months = useMemo(() => {
-    const now = new Date();
-    return MONTH_SCALE.map((scale, i) => ({
-      label: monthLabel(new Date(now.getFullYear(), now.getMonth() - i, 1)),
-      scale,
-    }));
-  }, []);
-  const [monthIndex, setMonthIndex] = useState(0);
-  const month = months[monthIndex];
-
-  const billed = all.filter(hasApprovedBudget);
-  const spendOf = (spent: number) => Math.round(spent * month.scale * 100) / 100;
+  const month = { label: monthLabel(new Date()) };
+  const approved = all.filter(hasApprovedBudget);
+  const billed = approved.filter(hasComparableCost);
+  const spendOf = (spent: number) => spent;
 
   const totalSpend = billed.reduce((sum, s) => sum + spendOf(s.spent), 0);
   const totalBudget = billed.reduce((sum, s) => sum + s.budget, 0);
@@ -93,7 +81,7 @@ export default function CostsPage() {
 
   const exportCsv = () => {
     downloadCsv(`sandbox-costs-by-cost-centre-${month.label.replace(" ", "-").toLowerCase()}.csv`, [
-      ["Cost centre", "Business unit", "Sandboxes", "Spend (INR)"],
+      ["Cost centre", "Business unit", "Sandboxes", `Spend (${budgetCurrency})`],
       ...byCostCentre.map((r) => [r.costCenter, r.unit, r.count, r.spend.toFixed(2)]),
     ]);
   };
@@ -113,30 +101,17 @@ export default function CostsPage() {
   }
 
   const summary = [
-    { label: "Total spend", value: money(totalSpend) },
+    { label: "Reported spend", value: money(billed.length ? totalSpend : null) },
     { label: "Approved budget", value: money(totalBudget) },
-    { label: "Utilization", value: `${utilization}%` },
+    { label: "Utilization", value: billed.length ? `${utilization}%` : "Unavailable" },
   ];
 
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-4">
-        <label className="flex flex-col gap-1.5 text-xs font-medium text-muted">
-          Month
-          <select
-            className={selectCls}
-            value={monthIndex}
-            onChange={(e) => setMonthIndex(Number(e.target.value))}
-          >
-            {months.map((m, i) => (
-              <option key={m.label} value={i}>
-                {m.label}
-              </option>
-            ))}
-          </select>
-        </label>
+        <h2 className="text-lg font-semibold">{month.label}</h2>
         <p className="text-xs text-muted">
-          Cost data refreshes daily. Azure Cost Management data can lag by up to 24 hours.
+          {billed.length} of {approved.length} approved sandboxes reported cost data. Azure billing data may be delayed.
         </p>
       </div>
 

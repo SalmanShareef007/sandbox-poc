@@ -1,14 +1,15 @@
 "use client";
 
 import { useState } from "react";
-import { Search, SearchX } from "lucide-react";
+import { Flag, Search, SearchX } from "lucide-react";
 import StatusBadge from "@/components/ui/StatusBadge";
 import Skeleton from "@/components/ui/Skeleton";
 import EmptyState from "@/components/ui/EmptyState";
 import Tabs, { type TabItem } from "@/components/ui/Tabs";
-import { barColor, money, usedPct } from "@/components/admin/format";
+import { barColor, hasComparableCost, useMoney, usedPct } from "@/components/admin/format";
 import { useSandboxes } from "@/components/providers/SandboxProvider";
-import type { Sandbox, SandboxStatus } from "@/lib/demoData";
+import type { Sandbox, SandboxStatus } from "@/lib/types";
+import ReasonDialog from "@/components/admin/ReasonDialog";
 
 type StatusFilter = "All" | SandboxStatus;
 type TypeFilter = "All" | Sandbox["type"];
@@ -30,7 +31,9 @@ const selectCls =
   "border border-border bg-background px-4 py-2.5 text-sm text-foreground focus:border-accent focus:outline-none";
 
 export default function AdminSandboxesPage() {
-  const { adminRequests: all, isLoading } = useSandboxes();
+  const money = useMoney();
+  const { adminRequests: all, isLoading, flagCleanup } = useSandboxes();
+  const [cleanup, setCleanup] = useState<Sandbox | null>(null);
   const [status, setStatus] = useState<StatusFilter>("All");
   const [unit, setUnit] = useState("All");
   const [typeFilter, setTypeFilter] = useState<TypeFilter>("All");
@@ -147,6 +150,7 @@ export default function AdminSandboxesPage() {
                 <th scope="col" className="px-6 py-3 font-semibold">Budget used</th>
                 <th scope="col" className="px-6 py-3 text-right font-semibold">Spend</th>
                 <th scope="col" className="px-6 py-3 font-semibold">Expiry</th>
+                <th scope="col" className="px-6 py-3 font-semibold">Cleanup</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
@@ -175,6 +179,8 @@ export default function AdminSandboxesPage() {
                     <td className="w-56 px-6 py-4">
                       {noSpend ? (
                         <span className="text-muted">{money(s.budget)} requested</span>
+                      ) : !hasComparableCost(s) ? (
+                        <span className="text-muted">Cost data unavailable</span>
                       ) : (
                         <>
                           <div className="h-2 overflow-hidden bg-background">
@@ -190,7 +196,7 @@ export default function AdminSandboxesPage() {
                       )}
                     </td>
                     <td className="px-6 py-4 text-right font-medium text-foreground">
-                      {money(s.spent, 2)}
+                      {money(s.spent, 2, s.costCurrency)}
                     </td>
                     <td className="px-6 py-4">
                       {s.expiry ? (
@@ -210,6 +216,11 @@ export default function AdminSandboxesPage() {
                         <span className="text-muted">—</span>
                       )}
                     </td>
+                    <td className="px-6 py-4">
+                      {s.cleanupFlagged ? <p className="text-xs text-muted">Flagged; eligible {s.cleanupEligibleOn}</p> : (s.status === "Active" || s.status === "Expiring" || s.status === "Expired") && !s.operationInProgress ? (
+                        <button onClick={() => setCleanup(s)} className="inline-flex items-center gap-2 text-sm text-accent"><Flag size={16} />Flag cleanup</button>
+                      ) : null}
+                    </td>
                   </tr>
                 );
               })}
@@ -217,6 +228,14 @@ export default function AdminSandboxesPage() {
           </table>
         </div>
       )}
+      <ReasonDialog
+        open={cleanup !== null}
+        onClose={() => setCleanup(null)}
+        title="Flag sandbox for cleanup"
+        confirmLabel="Flag cleanup"
+        intro={cleanup && <>Flag <span className="font-mono">{cleanup.name}</span> for resource deletion. Expired sandboxes wait for their grace period; other approved cleanup can start immediately.</>}
+        onConfirm={async (reason) => { if (cleanup && await flagCleanup(cleanup.id, reason)) setCleanup(null); }}
+      />
     </section>
   );
 }

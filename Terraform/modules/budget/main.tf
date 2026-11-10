@@ -10,30 +10,14 @@ resource "azurerm_consumption_budget_resource_group" "sandbox_budget" {
     start_date = var.start_date
   }
 
-  # Alert when actual spending reaches 75%
-  notification {
-    enabled        = true
-    threshold      = 75
-    operator       = "GreaterThanOrEqualTo"
-    threshold_type = "Actual"
-    contact_emails = var.contact_emails
-  }
-
-  # Alert when actual spending reaches 90%
-  notification {
-    enabled        = true
-    threshold      = 90
-    operator       = "GreaterThanOrEqualTo"
-    threshold_type = "Actual"
-    contact_emails = var.contact_emails
-  }
-
-  # Alert when actual spending reaches 100%
-  notification {
-    enabled        = true
-    threshold      = 100
-    operator       = "GreaterThanOrEqualTo"
-    threshold_type = "Actual"
-    contact_emails = var.contact_emails
+  dynamic "notification" {
+    for_each = toset(var.thresholds)
+    content {
+      enabled        = true
+      threshold      = notification.value
+      operator       = "GreaterThanOrEqualTo"
+      threshold_type = "Actual"
+      contact_emails = var.contact_emails
+    }
   }
 }

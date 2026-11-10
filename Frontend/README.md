@@ -1,36 +1,54 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Azure Sandbox Frontend
 
-## Getting Started
+For the complete local API/frontend/worker testing procedure, see the
+[local testing guide](../docs/local-testing.md).
 
-First, run the development server:
+Next.js interface for sandbox requests, administrator approvals, extensions,
+decommissioning, notifications, and reported Azure costs. Application data comes
+from the backend API; shared response types are defined in [lib/types.ts](lib/types.ts).
 
-```bash
+## Local Development
+
+Use a supported Node.js LTS version; the deployment image uses Node.js 24.
+Configure the public settings shown in [.env.example](.env.example) in your local
+environment. Do not put passwords, client secrets, or database URLs in frontend
+settings.
+
+From the Frontend directory:
+
+```powershell
+npm ci
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open http://localhost:3000/login. Start the backend separately and register the
+exact local redirect URI in the Entra SPA application.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+| Setting | Purpose |
+| --- | --- |
+| `NEXT_PUBLIC_CLIENT_ID` | Entra SPA application ID |
+| `NEXT_PUBLIC_TENANT_ID` | Entra tenant ID |
+| `NEXT_PUBLIC_REDIRECT_URI` | Registered SPA redirect URL |
+| `NEXT_PUBLIC_API_SCOPE` | Exposed delegated API scope |
+| `NEXT_PUBLIC_API_BASE_URL` | Backend origin, without `/api/v1` |
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Navigation uses verified roles from the API. Administrator actions are also
+authorized by the backend; hiding a page is not an authorization boundary.
 
-## Learn More
+## Checks
 
-To learn more about Next.js, take a look at the following resources:
+```powershell
+npm run lint
+npm run build
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Deployment
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+The Dockerfile builds Linux standalone output and serves it on port 3000.
+Supply all five public settings as Docker build arguments using the hosted API
+URL and registered HTTPS redirect URL. These settings are embedded at build time;
+changing runtime environment variables does not update an existing browser bundle.
 
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+For code-based hosting, build with `npm run build` and start with `npm start`.
+See the [backend deployment guide](../Backend/README.md) for API configuration,
+worker operation, and release safeguards.

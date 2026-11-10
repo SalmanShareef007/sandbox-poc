@@ -6,16 +6,17 @@ import { useRole } from "@/hooks/useRole";
 import { useToast } from "@/components/providers/ToastProvider";
 import { apiFetch } from "@/lib/api";
 import {
-  DEMO_REQUESTOR_EMAIL,
-  notifications as initialNotifications,
   type ExtensionRequest,
   type Notification,
   type Sandbox,
-} from "@/lib/demoData";
+  type BusinessUnit,
+  type PlatformConfiguration,
+} from "@/lib/types";
 
 export interface NewRequest {
   businessUnit: string;
   costCenter: string;
+  managerEmail: string;
   workload: string;
   region: string;
   role: string;
@@ -32,11 +33,16 @@ interface SandboxContextValue {
   /** Every sandbox across all users, for admin screens. */
   adminRequests: Sandbox[];
   extensionRequests: ExtensionRequest[];
+  configuration: PlatformConfiguration | null;
+  adminBusinessUnits: BusinessUnit[];
+  saveBusinessUnit: (unit: Omit<BusinessUnit, "id">, id?: string) => Promise<boolean>;
+  importBusinessUnits: (units: unknown) => Promise<boolean>;
+  flagCleanup: (id: string, reason: string) => Promise<boolean>;
   isLoading: boolean;
   error: string | null;
   refresh: () => Promise<void>;
   addRequest: (req: NewRequest) => Promise<Sandbox | null>;
-  requestExtension: (id: string, days: ExtensionRequest["extraDays"], reason: string) => Promise<boolean>;
+  requestExtension: (id: string, days: number | null, reason: string, expiryDate?: string) => Promise<boolean>;
   decommissionRequested: (id: string, reason: string) => Promise<boolean>;
   approveRequest: (id: string, budgetOverride?: number) => Promise<boolean>;
   rejectRequest: (id: string, reason: string) => Promise<boolean>;
@@ -53,43 +59,22 @@ const SandboxContext = createContext<SandboxContextValue | null>(null);
 const BUSY_POLL_MS = 5_000;
 const IDLE_POLL_MS = 30_000;
 
-const nowStamp = () => {
-  const d = new Date();
-  const date = d.toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
-  const time = d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
-  return `${date}, ${time}`;
-};
-
 const path = (id: string) => encodeURIComponent(id);
-
-const SPEND_CURVE = [0.06, 0.15, 0.27, 0.39, 0.52, 0.66, 0.83, 1];
-const SPENDING: Sandbox["status"][] = ["Active", "Expiring", "Expired", "Decommissioning"];
-
-/**
- * Placeholder spend until Azure Cost Management is integrated (next phase).
- * Deterministic per sandbox so numbers don't jump between refreshes.
- */
-function withPlaceholderSpend(s: Sandbox): Sandbox {
-  if (!SPENDING.includes(s.status)) return { ...s, spent: 0, spendHistory: undefined };
-  let hash = 0;
-  for (const ch of s.id) hash = (hash * 31 + ch.charCodeAt(0)) % 997;
-  const spent = Math.round(s.budget * (0.15 + (hash % 60) / 100) * 100) / 100;
-  return { ...s, spent, spendHistory: SPEND_CURVE.map((f) => Math.round(spent * f * 100) / 100) };
-}
 
 const isBusy = (s: Sandbox) =>
   s.status === "Provisioning" || s.status === "Decommissioning" || !!s.operationInProgress;
 
 export function SandboxProvider({ children }: { children: React.ReactNode }) {
-  const { account, getApiToken } = useAuth();
+  const { getApiToken } = useAuth();
   const { isAdmin, ready } = useRole();
   const { toast } = useToast();
-  const email = account?.username ?? "";
 
   const [mine, setMine] = useState<Sandbox[]>([]);
   const [all, setAll] = useState<Sandbox[]>([]);
   const [extensionRequests, setExtensionRequests] = useState<ExtensionRequest[]>([]);
-  const [allNotifications, setNotifications] = useState<Notification[]>(initialNotifications);
+  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [configuration, setConfiguration] = useState<PlatformConfiguration | null>(null);
+  const [adminBusinessUnits, setAdminBusinessUnits] = useState<BusinessUnit[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -104,16 +89,22 @@ export function SandboxProvider({ children }: { children: React.ReactNode }) {
 
   const load = useCallback(async () => {
     try {
-      const [own, every, extensions] = await Promise.all([
+      const [own, every, extensions, notices, config, units] = await Promise.all([
         apiFetch<Sandbox[]>(getToken, "/sandboxes"),
         isAdmin ? apiFetch<Sandbox[]>(getToken, "/admin/sandboxes") : Promise.resolve<Sandbox[]>([]),
         isAdmin
           ? apiFetch<ExtensionRequest[]>(getToken, "/extensions")
           : Promise.resolve<ExtensionRequest[]>([]),
+        apiFetch<Notification[]>(getToken, "/notifications"),
+        apiFetch<PlatformConfiguration>(getToken, "/configuration"),
+        isAdmin ? apiFetch<BusinessUnit[]>(getToken, "/admin/business-units") : Promise.resolve<BusinessUnit[]>([]),
       ]);
-      setMine(own.map(withPlaceholderSpend));
-      setAll(every.map(withPlaceholderSpend));
+      setMine(own);
+      setAll(every);
       setExtensionRequests(extensions);
+      setNotifications(notices);
+      setConfiguration(config);
+      setAdminBusinessUnits(units);
       setError(null);
       lastError.current = null;
     } catch (err) {
@@ -143,24 +134,6 @@ export function SandboxProvider({ children }: { children: React.ReactNode }) {
     };
   }, [ready, load, busy]);
 
-  const isMine = useCallback(
-    (address: string) => {
-      const a = address.toLowerCase();
-      return a.includes(DEMO_REQUESTOR_EMAIL) || (email !== "" && a.includes(email.toLowerCase()));
-    },
-    [email]
-  );
-
-  // Notifications stay local/demo until email notifications are built.
-  const notifications = useMemo(
-    () => allNotifications.filter((n) => isMine(n.to)),
-    [allNotifications, isMine]
-  );
-
-  const notify = useCallback((n: Omit<Notification, "id" | "when">) => {
-    setNotifications((prev) => [{ ...n, id: `n${Date.now()}`, when: nowStamp() }, ...prev]);
-  }, []);
-
   /** Runs an API action, refreshes data, and toasts any error. */
   const run = useCallback(
     async <T,>(action: () => Promise<T>): Promise<T | null> => {
@@ -182,40 +155,26 @@ export function SandboxProvider({ children }: { children: React.ReactNode }) {
   );
 
   const addRequest = useCallback(
-    async (req: NewRequest) => {
-      const created = await run(() => post<Sandbox>("/sandboxes", req));
-      if (created) {
-        notify({ category: "Approval", title: `Sandbox request submitted — ${created.name}`, to: created.owner });
-      }
-      return created;
-    },
-    [run, post, notify]
+    async (req: NewRequest) => run(() => post<Sandbox>("/sandboxes", req)),
+    [run, post]
   );
 
   const requestExtension = useCallback(
-    async (id: string, days: ExtensionRequest["extraDays"], reason: string) => {
+    async (id: string, days: number | null, reason: string, expiryDate?: string) => {
       const ext = await run(() =>
-        post<ExtensionRequest>(`/sandboxes/${path(id)}/extensions`, { extraDays: days, reason })
+        post<ExtensionRequest>(`/sandboxes/${path(id)}/extensions`, expiryDate ? { requestedExpiryDate: expiryDate, reason } : { extraDays: days, reason })
       );
-      if (ext) {
-        notify({
-          category: "Approval",
-          title: `Extension requested (+${days} days) — ${ext.sandboxName}`,
-          to: ext.requestorEmail,
-        });
-      }
       return ext !== null;
     },
-    [run, post, notify]
+    [run, post]
   );
 
   const decommissionRequested = useCallback(
     async (id: string, reason: string) => {
       const s = await run(() => post<Sandbox>(`/sandboxes/${path(id)}/decommission`, { reason }));
-      if (s) notify({ category: "Approval", title: `Decommission requested — ${s.name}`, to: s.owner });
       return s !== null;
     },
-    [run, post, notify]
+    [run, post]
   );
 
   const approveRequest = useCallback(
@@ -227,10 +186,9 @@ export function SandboxProvider({ children }: { children: React.ReactNode }) {
   const rejectRequest = useCallback(
     async (id: string, reason: string) => {
       const s = await run(() => post<Sandbox>(`/approvals/${path(id)}/reject`, { reason }));
-      if (s) notify({ category: "Approval", title: `Sandbox request rejected - ${id}`, to: s.requestorEmail });
       return s !== null;
     },
-    [run, post, notify]
+    [run, post]
   );
 
   const retryProvisioning = useCallback(
@@ -260,12 +218,33 @@ export function SandboxProvider({ children }: { children: React.ReactNode }) {
     [run, post]
   );
 
+  const saveBusinessUnit = useCallback(
+    async (unit: Omit<BusinessUnit, "id">, id?: string) =>
+      (await run(() => apiFetch<BusinessUnit>(getToken, `/admin/business-units${id ? `/${path(id)}` : ""}`, { method: id ? "PUT" : "POST", body: unit }))) !== null,
+    [run, getToken]
+  );
+
+  const flagCleanup = useCallback(
+    async (id: string, reason: string) => (await run(() => post(`/admin/sandboxes/${path(id)}/cleanup`, { reason }))) !== null,
+    [run, post]
+  );
+
+  const importBusinessUnits = useCallback(
+    async (units: unknown) => (await run(() => post("/admin/business-units/import", units))) !== null,
+    [run, post]
+  );
+
   const value = useMemo(
     () => ({
       sandboxes: mine,
       notifications,
       adminRequests: all,
       extensionRequests,
+      configuration,
+      adminBusinessUnits,
+      saveBusinessUnit,
+      importBusinessUnits,
+      flagCleanup,
       isLoading,
       error,
       refresh: load,
@@ -285,6 +264,11 @@ export function SandboxProvider({ children }: { children: React.ReactNode }) {
       notifications,
       all,
       extensionRequests,
+      configuration,
+      adminBusinessUnits,
+      saveBusinessUnit,
+      importBusinessUnits,
+      flagCleanup,
       isLoading,
       error,
       load,

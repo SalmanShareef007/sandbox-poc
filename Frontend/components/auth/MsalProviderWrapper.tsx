@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { PublicClientApplication } from "@azure/msal-browser";
 import { MsalProvider } from "@azure/msal-react";
 import {msalConfig} from "@/config/authConfig";
+import RoleProvider from "@/components/providers/RoleProvider";
 
 export default function MsalProviderWrapper({
   children,
@@ -11,6 +12,7 @@ export default function MsalProviderWrapper({
   children: React.ReactNode;
 }) {
   const [instance, setInstance] = useState<PublicClientApplication | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const init = async () => {
@@ -29,8 +31,10 @@ export default function MsalProviderWrapper({
       setInstance(pca);
     };
 
-    init();
+    void init().catch((cause: unknown) => setError(cause instanceof Error ? cause.message : "Authentication could not start."));
   }, []);
+
+  if (error) return <div role="alert" className="p-8 text-sm">Authentication unavailable: {error}</div>;
 
   if (!instance) {
   return (
@@ -40,5 +44,5 @@ export default function MsalProviderWrapper({
   );
 }
 
-  return <MsalProvider instance={instance}>{children}</MsalProvider>;
+  return <MsalProvider instance={instance}><RoleProvider>{children}</RoleProvider></MsalProvider>;
 }

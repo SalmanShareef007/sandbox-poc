@@ -24,5 +24,5 @@ output "sandbox_count" {
 
 output "policy_definition_id" {
   description = "Shared mandatory tags policy definition ID"
-  value       = azurerm_policy_definition.mandatory_tags.id
+  value       = azurerm_policy_definition.mandatory_tags[0].id
 }

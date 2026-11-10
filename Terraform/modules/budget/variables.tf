@@ -33,3 +33,8 @@ variable "contact_emails" {
   description = "Email addresses receiving budget notifications"
   type        = list(string)
 }
+
+variable "thresholds" {
+  type    = list(number)
+  default = [75, 90, 100]
+}

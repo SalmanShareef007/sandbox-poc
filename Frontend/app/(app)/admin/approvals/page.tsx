@@ -9,12 +9,13 @@ import StatusBadge from "@/components/ui/StatusBadge";
 import EmptyState from "@/components/ui/EmptyState";
 import Skeleton from "@/components/ui/Skeleton";
 import ReasonDialog from "@/components/admin/ReasonDialog";
-import { money, sameEmail, SELF_APPROVAL_MESSAGE } from "@/components/admin/format";
+import { useMoney, sameEmail, SELF_APPROVAL_MESSAGE } from "@/components/admin/format";
+import { useRole } from "@/hooks/useRole";
 import { useSandboxes } from "@/components/providers/SandboxProvider";
 import { useToast } from "@/components/providers/ToastProvider";
 import { useAuth } from "@/hooks/useAuth";
 import { parseDemoDate } from "@/lib/dates";
-import type { Sandbox, SandboxStatus } from "@/lib/demoData";
+import type { Sandbox, SandboxStatus } from "@/lib/types";
 
 type TabKey = "pending" | "decommission" | "provisioning" | "failed" | "decided";
 
@@ -22,10 +23,10 @@ const DECIDED: SandboxStatus[] = ["Active", "Expiring", "Expired", "Rejected", "
 
 const matchers: Record<TabKey, (s: Sandbox) => boolean> = {
   pending: (s) => s.status === "Pending",
-  decommission: (s) => !!s.decommissionPending,
+  decommission: (s) => !!s.decommissionPending && !s.cleanupFlagged,
   provisioning: (s) =>
     s.status === "Provisioning" || s.status === "Decommissioning" || !!s.operationInProgress,
-  failed: (s) => s.status === "Failed",
+  failed: (s) => s.status === "Failed" || !!s.failedOperation,
   decided: (s) => DECIDED.includes(s.status),
 };
 
@@ -112,7 +113,7 @@ function Approvals() {
     const ok = await approveDecommission(decommissioning.id);
     setBusy(false);
     if (!ok) return;
-    toast(`Decommissioning ${decommissioning.name}. This can take a few minutes.`, "info");
+    toast(`Cleanup flagged for ${decommissioning.name}.`, "info");
     setDecommissioning(null);
   };
 
@@ -154,19 +155,19 @@ function Approvals() {
       <Modal
         open={decommissioning !== null}
         onClose={() => setDecommissioning(null)}
-        title="Approve decommission"
+        title="Approve cleanup"
       >
         {decommissioning && (
           <>
             <div className="space-y-3 p-6 text-sm text-muted">
               <p>
-                Permanently delete{" "}
+                Flag{" "}
                 <span className="font-mono text-foreground">{decommissioning.name}</span> and every
-                resource inside it for {decommissioning.requestorName}?
+                resource inside it for cleanup for {decommissioning.requestorName}?
               </p>
               <p>
                 The budget and resource group are deleted, then the sandbox is removed from Terraform
-                state. This cannot be undone.
+                state when eligible after the expiry grace period. Pending extensions block cleanup. Deletion cannot be undone.
               </p>
             </div>
             <div className="flex justify-end gap-3 border-t border-border px-6 py-4">
@@ -178,7 +179,7 @@ function Approvals() {
                 disabled={busy}
                 className="bg-red-600 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {busy ? "Starting…" : "Delete sandbox"}
+                {busy ? "Flagging…" : "Flag cleanup"}
               </button>
             </div>
           </>
@@ -249,6 +250,7 @@ function RequestCard({
   onApproveDecommission: () => void;
   onRejectDecommission: () => void;
 }) {
+  const money = useMoney();
   const details: [string, React.ReactNode][] = [
     ["Type", s.type],
     [
@@ -260,6 +262,7 @@ function RequestCard({
     ],
     ["Business unit", s.businessUnit],
     ["Cost centre", s.costCenter],
+    ["Manager", s.managerEmail || "Not recorded"],
     ["Workload", s.workload],
     ["Region", s.region],
     ["Access role", s.role ?? "Contributor"],
@@ -301,7 +304,7 @@ function RequestCard({
           </div>
         </div>
 
-        {s.status === "Failed" && s.provisioningNote && (
+        {(s.status === "Failed" || s.failedOperation) && s.provisioningNote && (
           <div className="border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-700 dark:text-red-400">
             {s.provisioningNote}
           </div>
@@ -411,7 +414,7 @@ function CardFooter({
   if (s.decommissionPending) {
     return (
       <div className={footerCls}>
-        <p className="text-sm text-muted">Deletes the resource group and all of its resources.</p>
+        <p className="text-sm text-muted">{s.cleanupFlagged ? `Cleanup flagged; eligible from ${s.cleanupEligibleOn}.` : "Flags the resource group and its resources for cleanup after any expiry grace period."}</p>
         <div className="flex gap-3">
           <button onClick={onRejectDecommission} className={`${btnSecondary} inline-flex items-center gap-2`}>
             <X size={16} aria-hidden="true" />
@@ -419,17 +422,18 @@ function CardFooter({
           </button>
           <button
             onClick={onApproveDecommission}
+            disabled={isOwn || s.cleanupFlagged}
             className="inline-flex items-center gap-2 bg-red-600 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-red-700"
           >
             <Power size={16} aria-hidden="true" />
-            Approve decommission
+            {s.cleanupFlagged ? "Cleanup flagged" : "Approve cleanup"}
           </button>
         </div>
       </div>
     );
   }
 
-  if (s.status === "Failed") {
+  if (s.status === "Failed" || s.failedOperation) {
     return (
       <div className={footerCls}>
         <PipelineLink url={s.pipelineRunUrl} />
@@ -456,14 +460,17 @@ function CardFooter({
 }
 
 function ApproveForm({ sandbox, onClose }: { sandbox: Sandbox; onClose: () => void }) {
-  const { approveRequest } = useSandboxes();
+  const money = useMoney();
+  const { budgetCurrency } = useRole();
+  const { approveRequest, configuration } = useSandboxes();
   const { toast } = useToast();
   const inputId = useId();
   const [budget, setBudget] = useState(String(sandbox.budget));
   const [submitting, setSubmitting] = useState(false);
 
   const amount = Number(budget);
-  const valid = Number.isFinite(amount) && amount > 0;
+  const maxBudget = configuration?.maxBudget ?? 0;
+  const valid = Number.isFinite(amount) && amount > 0 && amount <= maxBudget;
 
   const onConfirm = async () => {
     if (!valid || submitting) return;
@@ -485,13 +492,14 @@ function ApproveForm({ sandbox, onClose }: { sandbox: Sandbox; onClose: () => vo
         </p>
         <div>
           <label htmlFor={inputId} className="mb-2 block text-sm font-medium text-foreground">
-            Approved budget (INR)
+            Approved budget ({budgetCurrency})
           </label>
           <input
             id={inputId}
             type="number"
             min={1}
-            step={50}
+            max={maxBudget}
+            step="0.01"
             value={budget}
             onChange={(e) => setBudget(e.target.value)}
             aria-invalid={!valid}
@@ -499,11 +507,11 @@ function ApproveForm({ sandbox, onClose }: { sandbox: Sandbox; onClose: () => vo
             className="w-full border border-border bg-background px-4 py-3 text-sm text-foreground focus:border-accent focus:outline-none"
           />
           <p id={`${inputId}-hint`} className="mt-1.5 text-xs text-muted">
-            Default sandbox budget is ₹500. Requested: {money(sandbox.budget)}.
+            Maximum {money(maxBudget)}. Requested: {money(sandbox.budget)}.
           </p>
           {!valid && (
             <p role="alert" className="mt-1 text-xs text-red-700 dark:text-red-400">
-              Budget must be greater than 0.
+              Budget must be greater than 0 and at most {money(maxBudget)}.
             </p>
           )}
         </div>

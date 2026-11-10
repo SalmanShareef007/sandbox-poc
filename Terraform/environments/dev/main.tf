@@ -1,9 +1,10 @@
 
 # --------------------------------------------------
-# 1. Shared subscription-level Azure Policy Definition
+# 1. Reusable tag policy, assigned only to sandbox resource groups
 # --------------------------------------------------
 
 resource "azurerm_policy_definition" "mandatory_tags" {
+  count        = 1
   name         = "sandbox-poc-mandatory-tags"
   policy_type  = "Custom"
   mode         = "Indexed"
@@ -63,6 +64,11 @@ resource "azurerm_policy_definition" "mandatory_tags" {
   })
 }
 
+moved {
+  from = azurerm_policy_definition.mandatory_tags
+  to   = azurerm_policy_definition.mandatory_tags[0]
+}
+
 
 # --------------------------------------------------
 # 2. Sandbox Resource Group Module
@@ -83,6 +89,32 @@ module "sandbox" {
 # 3. RBAC Module
 # --------------------------------------------------
 
+resource "azurerm_role_definition" "sandbox_contributor" {
+  name        = "Sandbox Contributor ${var.environment} ${substr(var.subscription_id, 0, 8)}"
+  scope       = "/subscriptions/${var.subscription_id}"
+  description = "Sandbox resource management without group deletion, governance changes, or access administration."
+
+  permissions {
+    actions = ["*"]
+    not_actions = [
+      "Microsoft.Authorization/*/Write",
+      "Microsoft.Authorization/*/Delete",
+      "Microsoft.Authorization/elevateAccess/Action",
+      "Microsoft.Blueprint/blueprintAssignments/write",
+      "Microsoft.Blueprint/blueprintAssignments/delete",
+      "Microsoft.Compute/galleries/share/action",
+      "Microsoft.Purview/consents/write",
+      "Microsoft.Purview/consents/delete",
+      "Microsoft.Resources/subscriptions/resourceGroups/write",
+      "Microsoft.Resources/subscriptions/resourceGroups/delete",
+      "Microsoft.Consumption/budgets/write",
+      "Microsoft.Consumption/budgets/delete",
+    ]
+  }
+
+  assignable_scopes = ["/subscriptions/${var.subscription_id}"]
+}
+
 module "rbac" {
   source   = "../../modules/rbac"
   for_each = var.sandboxes
@@ -91,7 +123,7 @@ module "rbac" {
   principal_id      = each.value.principal_id
   principal_type    = "User"
 
-  role_definition_name = each.value.role
+  role_definition_name = each.value.role == "Sandbox Contributor" ? azurerm_role_definition.sandbox_contributor.name : each.value.role
 }
 
 
@@ -105,7 +137,7 @@ module "policy" {
 
   resource_group_id = module.sandbox[each.key].resource_group_id
 
-  policy_definition_id = azurerm_policy_definition.mandatory_tags.id
+  policy_definition_id = azurerm_policy_definition.mandatory_tags[0].id
 
   policy_effect = "Audit"
 }
@@ -125,9 +157,8 @@ module "budget" {
   amount     = each.value.monthly_budget
   time_grain = "Monthly"
 
-  # Preserve the existing budget start date
-  start_date = "2026-11-01T00:00:00Z"
+  start_date = each.value.budget_start_date
 
-  # Send budget notifications to the sandbox owner
-  contact_emails = [each.value.owner]
+  contact_emails = distinct(concat([each.value.owner], var.budget_alert_emails))
+  thresholds     = var.budget_alert_thresholds
 }

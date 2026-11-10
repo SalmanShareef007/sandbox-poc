@@ -13,6 +13,7 @@ variable "sandbox" {
     cost_center    = string
     monthly_budget = number
     expiry_date    = string
+    manager_email  = optional(string)
   })
 }
 

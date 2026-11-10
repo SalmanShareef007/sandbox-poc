@@ -2,6 +2,7 @@
 from fastapi import APIRouter, Depends
 
 from app.core.security import get_current_user
+from app.core.config import settings
 
 router = APIRouter()
 
@@ -18,4 +19,5 @@ async def get_my_profile(
         "email": current_user.get("preferred_username"),
         "roles": current_user.get("roles", []),
         "scopes": current_user.get("scp", "").split(),
+        "budget_currency": settings.BUDGET_CURRENCY,
     }

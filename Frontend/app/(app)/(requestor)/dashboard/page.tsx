@@ -2,15 +2,13 @@
 
 import Link from "next/link";
 import { AlertTriangle, Bell, Box, Clock, IndianRupee, Shield } from "lucide-react";
-// import StatusBadge from "@/components/ui/StatusBadge";
 import StatusBadge from "@/components/ui/StatusBadge";
 import Skeleton from "@/components/ui/Skeleton";
 import EmptyState from "@/components/ui/EmptyState";
 import { useAuth } from "@/hooks/useAuth";
 import { useSandboxes } from "@/components/providers/SandboxProvider";
+import { hasComparableCost, useMoney, usedPct } from "@/components/admin/format";
 
-const money = (n: number) =>
-  n.toLocaleString("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 });
 
 function barColor(pct: number) {
   if (pct >= 90) return "bg-red-500";
@@ -19,8 +17,8 @@ function barColor(pct: number) {
 }
 
 export default function DashboardPage() {
+  const money = useMoney();
   const { account } = useAuth();
-  console.log("roles:", account?.idTokenClaims?.roles);
   const { sandboxes, notifications, isLoading } = useSandboxes();
   const firstName = account?.name?.split(" ")[0];
 
@@ -28,16 +26,17 @@ export default function DashboardPage() {
 
   const live = sandboxes.filter((s) => s.status === "Active" || s.status === "Expiring");
   const pending = sandboxes.filter((s) => s.status === "Pending");
-  const spent = live.reduce((sum, s) => sum + s.spent, 0);
-  const approved = live.reduce((sum, s) => sum + s.budget, 0);
+  const costed = live.filter(hasComparableCost);
+  const spent = costed.reduce((sum, s) => sum + s.spent, 0);
+  const approved = costed.reduce((sum, s) => sum + s.budget, 0);
   const utilization = approved ? Math.round((spent / approved) * 100) : 0;
   const expiringSoon = sandboxes.find((s) => s.status === "Expiring");
 
   const stats = [
-    { icon: Box, label: "Active sandboxes", value: String(live.length), sub: "0 expired", tone: "orange" },
+    { icon: Box, label: "Active sandboxes", value: String(live.length), sub: `${sandboxes.filter((s) => s.status === "Expired").length} expired and awaiting disposition`, tone: "orange" },
     { icon: Clock, label: "Pending requests", value: String(pending.length), sub: "Awaiting IT approval", tone: "cyan" },
-    { icon: IndianRupee, label: "Spend to date", value: money(spent), sub: `of ${money(approved)} approved`, tone: "lime" },
-    { icon: Shield, label: "Budget utilization", value: `${utilization}%`, sub: "Across active sandboxes", tone: "magenta" },
+    { icon: IndianRupee, label: "Month-to-date spend", value: money(costed.length ? spent : null), sub: `${costed.length} of ${live.length} active sandboxes reported`, tone: "lime" },
+    { icon: Shield, label: "Budget utilization", value: costed.length ? `${utilization}%` : "Unavailable", sub: "Across reported sandboxes", tone: "magenta" },
   ];
   const iconTones: Record<string, string> = {
     orange: "bg-accent text-white",
@@ -126,9 +125,8 @@ export default function DashboardPage() {
             />
           ) : (
           <div className="grid gap-4 p-6 md:grid-cols-2">
-            {/* {sandboxes.map((s) => { */}
             {visible.map((s) => {
-              const pct = s.budget ? Math.round((s.spent / s.budget) * 100) : 0;
+              const pct = usedPct(s);
               return (
                 <Link
                   key={s.id}
@@ -147,6 +145,8 @@ export default function DashboardPage() {
                     <p className="mt-4 text-sm text-muted">
                       Requested {s.requestedOn} · {money(s.budget)} · {s.durationDays} days
                     </p>
+                  ) : !hasComparableCost(s) ? (
+                    <p className="mt-4 text-sm text-muted">Cost data unavailable</p>
                   ) : (
                     <>
                       <div className="mt-4 h-2 overflow-hidden rounded-full bg-background">
@@ -157,7 +157,7 @@ export default function DashboardPage() {
                       </div>
                       <div className="mt-2 flex justify-between text-sm">
                         <span className="text-foreground">
-                          ${s.spent.toFixed(2)} / {money(s.budget)}
+                          {money(s.spent, 2, s.costCurrency)} / {money(s.budget)}
                         </span>
                         <span className="text-muted">{s.daysLeft}d left</span>
                       </div>

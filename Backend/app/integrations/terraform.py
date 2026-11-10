@@ -3,6 +3,7 @@ import shutil
 import subprocess
 import threading
 from pathlib import Path
+from azure.identity import ClientSecretCredential, DefaultAzureCredential, ManagedIdentityCredential
  
 from app.core.config import settings
  
@@ -28,15 +29,35 @@ def service_principal_configured() -> bool:
     )
  
  
+def azure_credential():
+    if service_principal_configured():
+        return ClientSecretCredential(settings.ARM_TENANT_ID, settings.ARM_CLIENT_ID, settings.ARM_CLIENT_SECRET.get_secret_value())
+    if settings.ARM_USE_MSI:
+        return ManagedIdentityCredential(client_id=settings.ARM_CLIENT_ID)
+    return DefaultAzureCredential(exclude_interactive_browser_credential=True)
+
+
 def _terraform_env() -> dict[str, str]:
+    from app.services.subscription_service import subscription_id
+
+    target_subscription = subscription_id()
     env = os.environ.copy()
-    env["ARM_SUBSCRIPTION_ID"] = settings.AZURE_SUBSCRIPTION_ID
+    env["ARM_SUBSCRIPTION_ID"] = target_subscription
+    env["TF_VAR_subscription_id"] = target_subscription
+    env["TF_VAR_environment"] = settings.TERRAFORM_ENVIRONMENT
+    env["TF_DATA_DIR"] = str(Path(settings.RUNTIME_DIRECTORY) / "terraform-data")
  
     if service_principal_configured():
         env["ARM_CLIENT_ID"] = settings.ARM_CLIENT_ID
         env["ARM_CLIENT_SECRET"] = settings.ARM_CLIENT_SECRET.get_secret_value()
         env["ARM_TENANT_ID"] = settings.ARM_TENANT_ID
         env.pop("ARM_USE_CLI", None)
+        env.pop("ARM_USE_MSI", None)
+    elif settings.ARM_USE_MSI:
+        env["ARM_USE_MSI"] = "true"
+        env["ARM_USE_CLI"] = "false"
+        if settings.ARM_CLIENT_ID:
+            env["ARM_CLIENT_ID"] = settings.ARM_CLIENT_ID
  
     return env
  
@@ -46,7 +67,7 @@ def _az_env() -> dict[str, str]:
  
     # A private az profile, so the user's own `az login` is never changed.
     if service_principal_configured():
-        env["AZURE_CONFIG_DIR"] = settings.AZURE_SP_CONFIG_DIRECTORY
+        env["AZURE_CONFIG_DIR"] = settings.AZURE_SP_CONFIG_DIRECTORY or str(Path(settings.RUNTIME_DIRECTORY) / ".azure")
  
     return env
  
@@ -154,7 +175,7 @@ def _ensure_az_service_principal_login() -> None:
         if _az_logged_in:
             return
  
-        Path(settings.AZURE_SP_CONFIG_DIRECTORY).mkdir(parents=True, exist_ok=True)
+        Path(_az_env()["AZURE_CONFIG_DIR"]).mkdir(parents=True, exist_ok=True)
         login = [
             "login", "--service-principal",
             "--username", settings.ARM_CLIENT_ID,

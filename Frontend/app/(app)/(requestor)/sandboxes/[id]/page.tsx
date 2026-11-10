@@ -20,15 +20,9 @@ import SpendChart from "@/components/ui/SpendChart";
 import ExtensionDialog from "@/components/sandbox/ExtensionDialog";
 import { useSandboxes } from "@/components/providers/SandboxProvider";
 import { useToast } from "@/components/providers/ToastProvider";
-import type { HistoryEntry, HistoryStatus, Sandbox } from "@/lib/demoData";
+import type { HistoryEntry, HistoryStatus, Sandbox } from "@/lib/types";
+import { hasComparableCost, useMoney, usedPct } from "@/components/admin/format";
 
-const money = (n: number, digits = 0) =>
-  n.toLocaleString("en-IN", {
-    style: "currency",
-    currency: "INR",
-    minimumFractionDigits: digits,
-    maximumFractionDigits: digits,
-  });
 
 function barColor(pct: number) {
   if (pct >= 90) return "bg-red-500";
@@ -285,13 +279,14 @@ function SandboxDetail({
   extending: boolean;
   setExtending: (open: boolean) => void;
 }) {
+  const money = useMoney();
   const canExtend =
-    (s.status === "Active" || s.status === "Expiring") && !s.operationInProgress && !s.decommissionPending;
+    (s.status === "Active" || s.status === "Expiring" || s.status === "Expired") && !s.operationInProgress && !s.failedOperation;
   const showActions = s.status === "Active" || s.status === "Expiring" || s.status === "Expired";
   const inProgress =
     s.status === "Provisioning" || s.status === "Decommissioning" || !!s.operationInProgress;
   const noSpend = s.status === "Pending" || s.status === "Rejected";
-  const pct = s.budget ? Math.round((s.spent / s.budget) * 100) : 0;
+  const pct = usedPct(s);
   const timeline = buildTimeline(s.history, s.imported);
 
   const details: [string, React.ReactNode][] = [
@@ -301,6 +296,9 @@ function SandboxDetail({
     ["Business unit", s.businessUnit],
     ["Cost centre", s.costCenter],
     ["Owner", s.owner],
+    ["Manager", s.managerEmail || "Not recorded"],
+    ["Cleanup", s.cleanupFlagged ? `Flagged; eligible from ${s.cleanupEligibleOn}` : "Administrator decision required"],
+    ["Pending expiry change", s.pendingExpiry ? `${s.pendingExpiry} (not yet applied)` : "None"],
     [
       "Expiry",
       s.expiry ? (
@@ -356,7 +354,7 @@ function SandboxDetail({
         </div>
       )}
 
-      {s.status === "Failed" && s.provisioningNote && (
+      {(s.status === "Failed" || s.failedOperation) && s.provisioningNote && (
         <div className="flex items-start gap-3 border border-red-500/30 bg-red-500/10 px-5 py-4 text-sm text-red-700 dark:text-red-400">
           <AlertTriangle size={18} className="mt-0.5 shrink-0" />
           <div>
@@ -395,6 +393,8 @@ function SandboxDetail({
           <Card title="Budget">
             {noSpend ? (
               <p className="text-sm text-muted">{money(s.budget)} requested · no spend yet</p>
+            ) : !hasComparableCost(s) ? (
+              <p className="text-sm text-muted">Cost data unavailable in the budget currency.</p>
             ) : (
               <>
                 <div className="flex items-end justify-between">
@@ -408,13 +408,13 @@ function SandboxDetail({
                   />
                 </div>
                 <p className="mt-2 text-xs text-muted">
-                  {pct}% used · alerts at 75 / 90 / 100%
+                  {pct}% used · alerts at 75 / 90 / 100%{s.costStatus === "stale" ? " · refresh delayed" : ""}
                 </p>
               </>
             )}
           </Card>
 
-          {s.spendHistory && s.spendHistory.length > 0 && (
+          {hasComparableCost(s) && s.spendHistory && s.spendHistory.length > 0 && (
             <Card title="Spend over time">
               <SpendChart values={s.spendHistory} budget={s.budget} />
             </Card>

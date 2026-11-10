@@ -1,15 +1,27 @@
-import type { Sandbox } from "@/lib/demoData";
+"use client";
 
-export const money = (n: number, digits = 0) =>
-  n.toLocaleString("en-IN", {
+import type { Sandbox } from "@/lib/types";
+import { useRole } from "@/hooks/useRole";
+
+export const money = (n: number | null, digits = 0, currency = "INR") =>
+  n === null ? "Unavailable" : n.toLocaleString("en-IN", {
     style: "currency",
-    currency: "INR",
+    currency,
     minimumFractionDigits: digits,
     maximumFractionDigits: digits,
   });
 
-export const usedPct = (s: Pick<Sandbox, "spent" | "budget">) =>
-  s.budget ? Math.round((s.spent / s.budget) * 100) : 0;
+export const usedPct = (s: Pick<Sandbox, "spent" | "budget" | "costCurrency" | "budgetCurrency">) =>
+  s.budget && s.spent !== null && (s.costCurrency ?? "INR") === (s.budgetCurrency ?? "INR")
+    ? Math.round((s.spent / s.budget) * 100) : 0;
+
+export const hasComparableCost = (s: Sandbox): s is Sandbox & { spent: number } =>
+  s.spent !== null && (s.costCurrency ?? "INR") === (s.budgetCurrency ?? "INR");
+
+export function useMoney() {
+  const { budgetCurrency } = useRole();
+  return (amount: number | null, digits = 0, currency = budgetCurrency) => money(amount, digits, currency);
+}
 
 export function barColor(pct: number) {
   if (pct >= 90) return "bg-red-500";
@@ -17,7 +29,7 @@ export function barColor(pct: number) {
   return "bg-emerald-500";
 }
 
-export const isLive = (s: Sandbox) => s.status === "Active" || s.status === "Expiring";
+export const isLive = (s: Sandbox) => s.status === "Active" || s.status === "Expiring" || s.status === "Expired";
 
 /** Statuses that have an approved budget (approved at some point). */
 export const hasApprovedBudget = (s: Sandbox) =>

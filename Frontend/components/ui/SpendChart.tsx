@@ -1,13 +1,11 @@
 "use client";
 
 import { useId, useState } from "react";
+import { useMoney } from "@/components/admin/format";
 
 const W = 600;
 const H = 200;
 const PAD = { top: 16, right: 12, bottom: 24, left: 12 };
-
-const money = (n: number) =>
-  n.toLocaleString("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 2 });
 
 interface SpendChartProps {
   /** Cumulative spend in INR, one value per week. */
@@ -16,6 +14,7 @@ interface SpendChartProps {
 }
 
 export default function SpendChart({ values, budget }: SpendChartProps) {
+  const money = useMoney();
   const [hover, setHover] = useState<number | null>(null);
   // Strip characters React ids may contain that break `url(#...)` references.
   const fillId = `spend-${useId().replace(/[^a-zA-Z0-9_-]/g, "")}`;
@@ -47,7 +46,7 @@ export default function SpendChart({ values, budget }: SpendChartProps) {
         className="h-full w-full"
         preserveAspectRatio="none"
         role="img"
-        aria-label={`Weekly cumulative spend over ${values.length} weeks, from ${money(values[0])} to ${money(values[values.length - 1])}`}
+        aria-label={`Cumulative spend over ${values.length} daily billing records, from ${money(values[0])} to ${money(values[values.length - 1])}`}
         onMouseLeave={() => setHover(null)}
       >
         <defs>
@@ -127,7 +126,7 @@ export default function SpendChart({ values, budget }: SpendChartProps) {
               top: `calc(${(active.y / H) * 100}% - 10px)`,
             }}
           >
-            <p className="text-muted">Week {active.week}</p>
+            <p className="text-muted">Billing record {active.week}</p>
             <p className="font-semibold text-foreground">{money(active.v)}</p>
           </div>
         </>
@@ -135,9 +134,9 @@ export default function SpendChart({ values, budget }: SpendChartProps) {
       </div>
 
       <div className="mt-2 flex justify-between text-xs text-muted">
-        <span>Week 1</span>
+        <span>First billing record</span>
         {budget ? <span>Dashed line: {money(budget)} budget</span> : null}
-        <span>Week {values.length}</span>
+        <span>Latest billing record</span>
       </div>
     </div>
   );

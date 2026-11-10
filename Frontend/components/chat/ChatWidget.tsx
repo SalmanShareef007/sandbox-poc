@@ -5,7 +5,7 @@ import Link from "next/link";
 import { Bot, MessageCircle, RotateCcw, Send, X } from "lucide-react";
 import { useSandboxes } from "@/components/providers/SandboxProvider";
 import { useRole } from "@/hooks/useRole";
-import type { Sandbox } from "@/lib/demoData";
+import type { Sandbox } from "@/lib/types";
 
 interface ChatAction {
   label: string;
@@ -36,8 +36,7 @@ const suggestions = [
   "What are my pending requests?",
 ];
 
-// Mock replies. Replace this function with a FastAPI call later.
-function mockReply(input: string, sandboxes: Sandbox[]): Reply {
+function sandboxReply(input: string, sandboxes: Sandbox[]): Reply {
   const q = input.toLowerCase();
 
   if (q.includes("help") || q.includes("faq") || q.includes("contact")) {
@@ -50,10 +49,12 @@ function mockReply(input: string, sandboxes: Sandbox[]): Reply {
   if (q.includes("budget") || q.includes("spend")) {
     const live = sandboxes.filter((s) => s.status === "Active" || s.status === "Expiring");
     const lines = live.map(
-      (s) => `${s.name}: ₹${s.spent.toFixed(2)} of ₹${s.budget} (${Math.round((s.spent / s.budget) * 100)}%)`
+      (s) => s.spent === null
+        ? `${s.name}: cost data unavailable`
+        : `${s.name}: ${s.costCurrency ?? "INR"} ${s.spent.toFixed(2)} spent; budget ${s.budgetCurrency ?? "INR"} ${s.budget}`
     );
     return {
-      text: `Here is your current budget usage:\n${lines.join("\n")}`,
+      text: lines.length ? `Latest reported month-to-date costs:\n${lines.join("\n")}` : "No active sandboxes have reported costs.",
       actions: [openSandboxes],
     };
   }
@@ -80,7 +81,7 @@ function mockReply(input: string, sandboxes: Sandbox[]): Reply {
 
   if (q.includes("request") || q.includes("create") || q.includes("new")) {
     return {
-      text: "Click New request in the sidebar, choose a subscription or resource group, fill in the business unit, cost centre, workload, budget and duration, then submit for approval.",
+      text: "Submit a resource-group sandbox request with your business unit, cost centre, workload, budget and duration for administrator approval.",
       actions: [{ label: "Open New request", href: "/requests/new" }],
     };
   }
@@ -117,7 +118,7 @@ export default function ChatWidget() {
     setTyping(true);
 
     replyTimer.current = setTimeout(() => {
-      setMessages((m) => [...m, { id: Date.now() + 1, role: "bot", ...mockReply(value, sandboxes) }]);
+      setMessages((m) => [...m, { id: Date.now() + 1, role: "bot", ...sandboxReply(value, sandboxes) }]);
       setTyping(false);
       replyTimer.current = null;
     }, 700);
@@ -145,7 +146,7 @@ export default function ChatWidget() {
               </div>
               <div className="leading-tight">
                 <p className="text-sm font-semibold text-foreground">Sandbox assistant</p>
-                <p className="text-xs text-muted">Demo mode</p>
+                <p className="text-xs text-muted">Sandbox status</p>
               </div>
             </div>
             <div className="flex items-center gap-1">

@@ -5,17 +5,15 @@ import { CheckCircle2 } from "lucide-react";
 import Modal from "@/components/ui/Modal";
 import { useSandboxes } from "@/components/providers/SandboxProvider";
 import { useToast } from "@/components/providers/ToastProvider";
-import type { Sandbox } from "@/lib/demoData";
+import type { Sandbox } from "@/lib/types";
 
 const MIN_REASON = 10;
-const options = [30, 60] as const;
-type ExtraDays = (typeof options)[number];
 
 const inputCls =
   "w-full border border-border bg-background px-4 py-3 text-sm text-foreground placeholder:text-muted focus:border-accent focus:outline-none";
 
 interface ExtensionDialogProps {
-  sandbox: Pick<Sandbox, "id" | "name">;
+  sandbox: Pick<Sandbox, "id" | "name" | "expiryDate">;
   open: boolean;
   onClose: () => void;
 }
@@ -32,26 +30,34 @@ function ExtensionForm({
   sandbox,
   onClose,
 }: {
-  sandbox: Pick<Sandbox, "id" | "name">;
+  sandbox: Pick<Sandbox, "id" | "name" | "expiryDate">;
   onClose: () => void;
 }) {
-  const { requestExtension } = useSandboxes();
+  const { requestExtension, configuration } = useSandboxes();
   const { toast } = useToast();
-  const [days, setDays] = useState<ExtraDays>(30);
+  const options = configuration?.extensionDays.filter((days) => days <= configuration.maxExtensionDays) ?? [];
+  const [daysChoice, setDays] = useState<number | null>(null);
+  const days = daysChoice ?? options[0] ?? 30;
+  const [mode, setMode] = useState<"duration" | "date">("duration");
+  const [requestedExpiry, setRequestedExpiry] = useState("");
+  const [openedAt] = useState(() => Date.now());
   const [reason, setReason] = useState("");
   const [done, setDone] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
   const length = reason.trim().length;
-  const valid = length >= MIN_REASON;
+  const base = Date.parse(`${sandbox.expiryDate}T00:00:00Z`);
+  const minDate = new Date(Math.max(Number.isFinite(base) ? base + 86400000 : 0, openedAt + 86400000)).toISOString().slice(0, 10);
+  const maxDate = Number.isFinite(base) ? new Date(base + (configuration?.maxExtensionDays ?? 60) * 86400000).toISOString().slice(0, 10) : "";
+  const valid = length >= MIN_REASON && (mode === "duration" ? options.includes(days) : !!requestedExpiry && requestedExpiry >= minDate && requestedExpiry <= maxDate);
 
   const onSubmit = async () => {
     if (!valid || submitting) return;
     setSubmitting(true);
-    const ok = await requestExtension(sandbox.id, days, reason.trim());
+    const ok = await requestExtension(sandbox.id, mode === "duration" ? days : null, reason.trim(), mode === "date" ? requestedExpiry : undefined);
     setSubmitting(false);
     if (!ok) return;
-    toast(`Extension of ${days} days requested for ${sandbox.name}`, "success");
+    toast(`Extension requested for ${sandbox.name}`, "success");
     setDone(true);
   };
 
@@ -61,7 +67,7 @@ function ExtensionForm({
         <CheckCircle2 size={40} className="mx-auto text-emerald-700 dark:text-emerald-400" />
         <p className="mt-3 font-semibold text-foreground">Extension requested</p>
         <p className="mt-1 text-sm text-muted">
-          A {days}-day extension for <span className="font-mono text-foreground">{sandbox.name}</span>{" "}
+          An extension for <span className="font-mono text-foreground">{sandbox.name}</span>{" "}
           has been sent to IT Administrators for approval.
         </p>
         <button
@@ -82,6 +88,14 @@ function ExtensionForm({
         </p>
 
         <div>
+          <fieldset className="mb-4 flex gap-5 text-sm">
+            <legend className="mb-2 font-medium">Extension</legend>
+            <label className="flex items-center gap-2"><input type="radio" name="extension-mode" checked={mode === "duration"} onChange={() => setMode("duration")} />Extra days</label>
+            <label className="flex items-center gap-2"><input type="radio" name="extension-mode" checked={mode === "date"} disabled={!sandbox.expiryDate} onChange={() => setMode("date")} />Expiry date</label>
+          </fieldset>
+          {mode === "date" ? (
+            <label className="block text-sm font-medium">Requested expiry date<input type="date" min={minDate} max={maxDate} value={requestedExpiry} onChange={(event) => setRequestedExpiry(event.target.value)} className={`${inputCls} mt-2`} /></label>
+          ) : <>
           <p className="mb-2 text-sm font-medium text-foreground">Extra days</p>
           <div className="grid grid-cols-2 gap-3">
             {options.map((d) => (
@@ -99,6 +113,7 @@ function ExtensionForm({
               </button>
             ))}
           </div>
+          </>}
         </div>
 
         <div>

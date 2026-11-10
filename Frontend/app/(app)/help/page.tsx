@@ -8,7 +8,7 @@ const CONTACT = "sandbox-admins@company.com";
 const faqs: { q: string; a: React.ReactNode }[] = [
   {
     q: "How do sandboxes work?",
-    a: "A sandbox is an isolated Azure environment for experimentation. You submit a request, IT Administrators approve it, and Terraform provisions it with mandatory tags, the access role you chose (Contributor or Owner), and budget alerts. When it is no longer needed, it is decommissioned after admin approval.",
+    a: "A sandbox is a resource group for experimentation in the shared sandbox subscription. IT Administrators approve requests before provisioning with Contributor access, mandatory tags and budget alerts. Deletion requires administrator approval.",
   },
   {
     q: "Subscription or resource group?",
@@ -16,19 +16,19 @@ const faqs: { q: string; a: React.ReactNode }[] = [
   },
   {
     q: "What are the budget rules?",
-    a: "Each sandbox gets a default budget of ₹500 (budgets are in INR, the subscription's billing currency). You receive email alerts when spend reaches 75%, 90% and 100% of the budget. In Phase 1, budgets are notify-only and resources are not stopped automatically. Larger budgets need extra justification and may require director approval.",
+    a: "You may request less than the configured maximum budget, but neither a request nor an approval can exceed it. Budget alerts use the configured thresholds and administrator recipients. They are notifications, not spending caps. Billing data can be delayed or temporarily unavailable.",
   },
   {
     q: "When does a sandbox expire, and can I extend it?",
-    a: "You choose a duration of 30, 60 or 90 days when you request a sandbox. You get a reminder 7 days before expiry. For Active or Expiring sandboxes, open the sandbox and choose Request extension to ask for 30 or 60 more days with a short reason.",
+    a: "Choose a configured duration or request an extension to a future expiry date. Users, managers and administrators receive configured expiry reminders. Expired resources keep running during grace and until an administrator flags cleanup. A pending extension blocks deletion; approval cancels earlier cleanup flags. The expiry tag changes only after the infrastructure update succeeds.",
   },
   {
     q: "How does approval work?",
-    a: "New requests are routed to IT Administrators. If a request is approved, provisioning starts automatically and the sandbox becomes Active when it is ready. If it is rejected, you receive an email and can see the reason on the sandbox page.",
+    a: "IT Administrators review requests. Approval queues provisioning; the sandbox becomes Active after successful completion. Decisions appear in notifications and the sandbox timeline. Email delivery depends on the configured notification service.",
   },
   {
     q: "Which tags are mandatory?",
-    a: "Every sandbox is tagged with Owner, BusinessUnit, CostCenter, Environment, ExpiryDate and ManagedBy. Azure Policy enforces these tags, so do not remove or change them.",
+    a: "New requests include Owner, BusinessUnit, CostCenter, Environment, ExpiryDate, Manager and ManagedBy tags. The original resource-group policy audits Owner, BusinessUnit, CostCenter, Environment, ExpiryDate and ManagedBy without blocking deployments. It is not assigned across the subscription or tenant.",
   },
   {
     q: "Who do I contact?",

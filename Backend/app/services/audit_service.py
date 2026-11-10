@@ -30,10 +30,10 @@ class AuditService:
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
-        logs = JSONStorageService.read(cls.FILE_NAME)
-        logs.append(log_entry)
-
-        JSONStorageService.write(cls.FILE_NAME, logs)
+        with JSONStorageService.lock():
+            logs = JSONStorageService.read(cls.FILE_NAME)
+            logs.append(log_entry)
+            JSONStorageService.write(cls.FILE_NAME, logs)
 
         return log_entry
 
