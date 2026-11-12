@@ -89,15 +89,11 @@ def update_request(
     *history: dict[str, str],
 ) -> dict[str, Any]:
     with JSONStorageService.lock():
-        current = SandboxRequestRepository.get_by_id(request_id)
+        updated = SandboxRequestRepository.update(request_id, updates, history)
 
-        if not current:
+        if updated is None:
             raise SandboxError("Sandbox request not found.", 404)
 
-        if history:
-            updates["history"] = [*current.get("history", []), *history]
-
-        updated = SandboxRequestRepository.update(request_id, updates)
         if history:
             from app.services.notification_service import publish
 
@@ -133,8 +129,7 @@ def generate_sandbox_id(business_unit: str, requestor_name: str, short_code: str
     first_name = _slug((requestor_name or "").split(" ")[0], 12) or "user"
     prefix = f"{unit}-{first_name}"
 
-    used = {r.get("sandbox_id") for r in SandboxRequestRepository.get_all()}
-    used |= {s.get("sandbox_id") for s in SandboxRepository.get_all()}
+    used = SandboxRequestRepository.sandbox_ids() | {s["sandbox_id"] for s in SandboxRepository.get_all()}
 
     number = 1
     while f"{prefix}-{number:03d}" in used:
@@ -265,11 +260,32 @@ def extension_view(extension: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def decommission_view(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": item["reference"],
+        "reason": item.get("reason"),
+        "source": item.get("source") or "user",
+        "requestedBy": item.get("requested_by"),
+        "requestedOn": format_date(item["created_at"]),
+        "status": item["status"].title(),
+        "decisionBy": item.get("decision_by"),
+        "decisionReason": item.get("decision_reason"),
+        "cleanupEligibleOn": item.get("cleanup_not_before"),
+    }
+
+
+def lifecycle(reference: str) -> dict[str, list[dict[str, Any]]]:
+    """Extension and decommission requests for one sandbox, newest first."""
+    return {
+        "extensions": [extension_view(e) for e in ExtensionRequestRepository.for_sandbox(reference)],
+        "decommissions": [decommission_view(d) for d in DecommissionRequestRepository.for_sandbox(reference)],
+    }
+
+
 def _pending_decommissions() -> dict[str, dict[str, Any]]:
     return {
         item["sandbox_reference"]: item
-        for item in DecommissionRequestRepository.get_all()
-        if item.get("status") in ("pending", "approved")
+        for item in DecommissionRequestRepository.get_all(statuses=("pending", "approved"))
     }
 
 
@@ -282,8 +298,7 @@ def list_for_user(claims: dict) -> list[dict[str, Any]]:
 
     return [
         to_view(request, pending.get(request["reference"]))
-        for request in _sorted_newest_first(SandboxRequestRepository.get_all())
-        if is_owner(request, claims)
+        for request in SandboxRequestRepository.get_for_owner(claims.get("oid"), claims.get("tid"))
     ]
 
 
@@ -440,6 +455,7 @@ def request_decommission(reference: str, reason: str, claims: dict) -> dict[str,
         "sandbox_id": request["sandbox_id"],
         "requested_by": user_email(claims),
         "requested_by_user_id": claims["oid"],
+        "requested_by_tenant_id": claims["tid"],
         "reason": reason,
     })
 
@@ -484,7 +500,7 @@ def _record_failure(
 ) -> None:
     message = summarize_error(exc)
     output = getattr(exc, "output", "") or str(exc)
-    write_job_log(request["reference"], operation, output)
+    write_job_log(request["reference"], operation, output, "ERROR")
 
     status = "active" if operation == "extension" else status
     SandboxRepository.update(request["sandbox_id"], {"status": status})
@@ -633,7 +649,7 @@ def retry(reference: str, claims: dict) -> dict[str, Any]:
 
 def recover_jobs() -> None:
     """Re-queues work that was interrupted by a backend restart."""
-    for request in SandboxRequestRepository.get_all():
+    for request in SandboxRequestRepository.get_in_flight():
         status = request.get("status")
 
         if status == "provisioning":
@@ -644,12 +660,12 @@ def recover_jobs() -> None:
             schedule_job(request["reference"], "extension")
 
 
-def import_existing_sandboxes() -> int:
-    """Creates request records for sandboxes that were provisioned before the portal."""
+def import_existing_sandboxes(inventory: list[dict[str, Any]]) -> int:
+    """Creates request records for inventory entries that were provisioned before the portal."""
     imported = 0
 
     with JSONStorageService.lock():
-        for sandbox in SandboxRepository.get_all():
+        for sandbox in inventory:
             if SandboxRequestRepository.get_by_sandbox_id(sandbox["sandbox_id"]):
                 continue
 

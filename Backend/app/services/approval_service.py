@@ -8,6 +8,7 @@ from app.repositories.extension_repository import (
     DecommissionRequestRepository,
     ExtensionRequestRepository,
 )
+from app.repositories.approval_repository import ApprovalRepository
 from app.repositories.sandbox_repository import SandboxRepository
 from app.services.audit_service import AuditService
 from app.services.sandbox_service import (
@@ -27,8 +28,6 @@ from app.services.storage_service import JSONStorageService
 
 class ApprovalService:
 
-    APPROVALS_FILE = "approvals.json"
-
     @classmethod
     def _record_decision(
         cls,
@@ -38,26 +37,13 @@ class ApprovalService:
         decision: str,
         comments: str | None = None,
     ) -> dict:
-        approval = {
-            "approval_id": str(uuid4()),
-            "request_type": request_type,
-            "request_id": reference,
-            "admin_user_id": admin_claims.get("oid"),
-            "admin_email": user_email(admin_claims),
-            "decision": decision,
-            "comments": comments,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        }
-
         with JSONStorageService.lock():
-            approvals = JSONStorageService.read(cls.APPROVALS_FILE)
-            approvals.append(approval)
-            JSONStorageService.write(cls.APPROVALS_FILE, approvals)
+            approval = ApprovalRepository.record(request_type, reference, admin_claims, decision, comments)
 
-        AuditService.log_action(
-            admin_claims.get("oid"), f"{request_type}_{decision}", request_type, reference,
-            {"comments": comments} if comments else None,
-        )
+            AuditService.log_action(
+                admin_claims.get("oid"), f"{request_type}_{decision}", request_type, reference,
+                {"comments": comments} if comments else None,
+            )
 
         return approval
 
@@ -163,6 +149,38 @@ class ApprovalService:
 
         return view_by_reference(reference)
 
+    @classmethod
+    @JSONStorageService.lock()
+    def reject_failed(cls, reference: str, admin_claims: dict, reason: str) -> dict:
+        """Gives up on a sandbox whose provisioning failed: cleans up what was created, then marks it Rejected."""
+        admin = user_email(admin_claims)
+        request = get_request_or_404(reference)
+
+        if request["status"] != "failed" or (request.get("failed_operation") or "provision") != "provision":
+            raise SandboxError("Only sandboxes whose provisioning failed can be rejected.", 409)
+
+        cls._prevent_self_approval(request, admin_claims)
+
+        SandboxRepository.update(request["sandbox_id"], {"status": "decommissioning"})
+        update_request(
+            request["request_id"],
+            {
+                "status": "decommissioning",
+                "operation_id": str(uuid4()),
+                "failed_operation": None,
+                "last_error": None,
+                "cleanup_outcome": "rejected",
+                "decision_by": admin,
+                "decision_reason": reason,
+                "decided_at": datetime.now(timezone.utc).isoformat(),
+            },
+            history_entry("Decommissioning", f"Provisioning failed; rejected by {admin}. Cleaning up created resources."),
+        )
+        cls._record_decision("sandbox_request", reference, admin_claims, "rejected", reason)
+        schedule_job(reference, "decommission")
+
+        return view_by_reference(reference)
+
     # --------------------------------------------------
     # Extensions
     # --------------------------------------------------
@@ -193,8 +211,8 @@ class ApprovalService:
             ).isoformat()
             if new_expiry <= today().isoformat() or extension["extra_days"] > settings.MAX_EXTENSION_DAYS:
                 raise SandboxError("The requested extension is outside the configured rules.", 409)
-            for cleanup in DecommissionRequestRepository.get_all():
-                if cleanup.get("sandbox_reference") == request["reference"] and cleanup.get("status") in ("pending", "approved"):
+            for cleanup in DecommissionRequestRepository.get_all(statuses=("pending", "approved")):
+                if cleanup.get("sandbox_reference") == request["reference"]:
                     DecommissionRequestRepository.update(cleanup["request_id"], {"status": "cancelled", "decision_reason": "Superseded by approved extension."})
 
             SandboxRepository.update(request["sandbox_id"], {"pending_expiry_date": new_expiry})
@@ -288,7 +306,7 @@ class ApprovalService:
     def flag_cleanup(cls, reference: str, reason: str, admin_claims: dict) -> dict:
         request = get_request_or_404(reference)
         cls._prevent_self_approval(request, admin_claims)
-        open_requests = [item for item in DecommissionRequestRepository.get_all() if item.get("sandbox_reference") == reference and item.get("status") in ("pending", "approved")]
+        open_requests = [item for item in DecommissionRequestRepository.get_all(statuses=("pending", "approved")) if item.get("sandbox_reference") == reference]
         if any(item["status"] == "approved" for item in open_requests):
             raise SandboxError("Cleanup is already flagged for this sandbox.", 409)
         if not open_requests:
@@ -303,7 +321,7 @@ class ApprovalService:
     @JSONStorageService.lock()
     def reject_decommission(cls, sandbox_reference: str, admin_claims: dict, reason: str) -> dict:
         admin = user_email(admin_claims)
-        decommission = next((item for item in DecommissionRequestRepository.get_all() if item.get("sandbox_reference") == sandbox_reference and item.get("status") in ("pending", "approved")), None)
+        decommission = next((item for item in DecommissionRequestRepository.get_all(statuses=("pending", "approved")) if item.get("sandbox_reference") == sandbox_reference), None)
 
         if not decommission:
             raise SandboxError("There is no pending decommission request for this sandbox.", 404)

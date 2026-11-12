@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from app.api.router import api_router
 from app.core.config import settings, validate_hosting_configuration
 from app.db.database import check_database, initialize_database, is_production
+from app.db.errors import DataError
 from app.services.sandbox_service import SandboxError
  
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -51,6 +52,13 @@ app.include_router(api_router, prefix="/api/v1")
 @app.exception_handler(SandboxError)
 async def sandbox_error_handler(_: Request, exc: SandboxError):
     return JSONResponse(status_code=exc.status_code, content={"detail": exc.message})
+
+
+@app.exception_handler(DataError)
+async def data_error_handler(request: Request, exc: DataError):
+    # The cause was already logged where it was raised; never return driver or SQL text to the client.
+    logger.warning("%s %s -> %s", request.method, request.url.path, type(exc).__name__)
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.public_message})
  
  
 @app.get("/", tags=["Root"])

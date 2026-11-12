@@ -51,7 +51,7 @@ function sandboxReply(input: string, sandboxes: Sandbox[]): Reply {
     const lines = live.map(
       (s) => s.spent === null
         ? `${s.name}: cost data unavailable`
-        : `${s.name}: ${s.costCurrency ?? "INR"} ${s.spent.toFixed(2)} spent; budget ${s.budgetCurrency ?? "INR"} ${s.budget}`
+        : `${s.name}: ${s.costCurrency ?? "USD"} ${s.spent.toFixed(2)} spent; budget ${s.budgetCurrency ?? "USD"} ${s.budget}`
     );
     return {
       text: lines.length ? `Latest reported month-to-date costs:\n${lines.join("\n")}` : "No active sandboxes have reported costs.",

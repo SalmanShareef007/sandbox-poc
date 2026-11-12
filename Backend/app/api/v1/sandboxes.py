@@ -35,6 +35,18 @@ def get_sandbox(reference: str, current_user: dict = Depends(get_current_user)):
     return sandbox_service.view_by_reference(reference)
 
 
+@router.get("/{reference}/lifecycle")
+def get_lifecycle(reference: str, current_user: dict = Depends(get_current_user)):
+    from app.core.security import is_admin
+
+    request = sandbox_service.get_request_or_404(reference)
+
+    if not (sandbox_service.is_owner(request, current_user) or is_admin(current_user)):
+        raise sandbox_service.SandboxError(f"Sandbox {reference} was not found.", 404)
+
+    return sandbox_service.lifecycle(reference)
+
+
 @router.post("/{reference}/extensions", status_code=status.HTTP_201_CREATED)
 def request_extension(
     reference: str,

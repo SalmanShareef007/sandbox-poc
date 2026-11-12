@@ -46,10 +46,18 @@ def available_subscriptions() -> list[dict]:
 
 
 def ensure_idle() -> None:
-    requests = Storage.read("sandbox_requests.json")
-    inventory = Storage.read("sandboxes.json")
-    jobs = Storage.read("terraform_jobs.json")
-    if any(item.get("status") not in ("rejected", "decommissioned") for item in requests) or inventory or any(item.get("status") in ("queued", "running") for item in jobs):
+    from sqlalchemy import select
+
+    from app.db.database import connection
+    from app.db.tables import sandbox_requests, sandboxes
+    from app.services.job_service import has_active_jobs
+
+    with connection() as conn:
+        open_request = conn.execute(
+            select(sandbox_requests.c.id).where(sandbox_requests.c.status.not_in(("rejected", "decommissioned"))).limit(1)
+        ).first()
+        live_sandbox = conn.execute(select(sandboxes.c.id).where(sandboxes.c.status != "decommissioned").limit(1)).first()
+    if open_request or live_sandbox or has_active_jobs():
         raise SubscriptionChangeError("Cannot change subscription while sandbox requests, resources, or failed operations still exist. Finish or reconcile them first.")
 
 

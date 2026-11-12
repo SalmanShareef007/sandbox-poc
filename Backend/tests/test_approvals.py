@@ -8,11 +8,20 @@ from app.repositories.sandbox_repository import SandboxRepository
 from app.repositories.extension_repository import ExtensionRequestRepository
 from app.services import sandbox_service
 from app.services.approval_service import ApprovalService
-from app.services.job_service import JOBS, run_next_job
-from app.services.storage_service import JSONStorageService as Storage
+from app.services.job_service import list_jobs, run_next_job
+from app.db.database import connection
+from sqlalchemy import func, select
+from app.db.tables import approvals
 
-OWNER = {"oid": "owner", "tid": "tenant", "preferred_username": "owner@example.com", "name": "Owner"}
-ADMIN = {"oid": "admin", "tid": "tenant", "preferred_username": "admin@example.com", "roles": ["Sandboxadmin"]}
+TENANT = "0b6bd7f4-1d1f-4a4e-8d8e-5f0f0b0d0001"
+OWNER = {"oid": "0b6bd7f4-1d1f-4a4e-8d8e-5f0f0b0d1001", "tid": TENANT, "preferred_username": "owner@example.com", "name": "Owner"}
+ADMIN = {"oid": "0b6bd7f4-1d1f-4a4e-8d8e-5f0f0b0d2001", "tid": TENANT, "preferred_username": "admin@example.com", "roles": ["Sandboxadmin"]}
+OTHER_OID = "0b6bd7f4-1d1f-4a4e-8d8e-5f0f0b0d3001"
+
+
+def approval_count():
+	with connection() as conn:
+		return conn.execute(select(func.count()).select_from(approvals)).scalar_one()
 
 
 @pytest.fixture
@@ -26,7 +35,7 @@ def request_record(database):
 def test_approval_and_queue_commit_together(request_record):
 	ApprovalService.approve_request(request_record, ADMIN)
 	request = SandboxRequestRepository.get_by_reference(request_record)
-	jobs = Storage.read(JOBS)
+	jobs = list_jobs()
 	assert request["status"] == "provisioning"
 	assert len(jobs) == 1
 	assert jobs[0]["id"] == request["operation_id"]
@@ -36,7 +45,7 @@ def test_self_approval_is_rejected(request_record):
 	with pytest.raises(sandbox_service.SandboxError) as error:
 		ApprovalService.approve_request(request_record, OWNER)
 	assert error.value.status_code == 403
-	assert Storage.read(JOBS) == []
+	assert list_jobs() == []
 
 
 def test_duplicate_approval_only_creates_one_job(request_record):
@@ -48,26 +57,26 @@ def test_duplicate_approval_only_creates_one_job(request_record):
 			return False
 	with ThreadPoolExecutor(max_workers=2) as executor:
 		assert sorted(executor.map(lambda value: approve(), range(2))) == [False, True]
-	assert len(Storage.read(JOBS)) == 1
+	assert len(list_jobs()) == 1
 
 
 def test_job_survives_recovery_without_duplicate(request_record, monkeypatch):
 	ApprovalService.approve_request(request_record, ADMIN)
 	for _iteration in range(2):
 		sandbox_service.recover_jobs()
-	assert len(Storage.read(JOBS)) == 1
+	assert len(list_jobs()) == 1
 	monkeypatch.setattr(sandbox_service.settings, "TERRAFORM_ENABLED", False)
 	monkeypatch.setattr(sandbox_service, "write_job_log", lambda *args: None)
 	assert run_next_job()
 	assert SandboxRequestRepository.get_by_reference(request_record)["status"] == "active"
-	assert Storage.read(JOBS)[0]["status"] == "completed"
+	assert list_jobs()[0]["status"] == "completed"
 	assert not run_next_job()
 
 
 def test_email_is_not_an_ownership_credential(request_record):
 	request = SandboxRequestRepository.get_by_reference(request_record)
-	assert not sandbox_service.is_owner(request, {**OWNER, "oid": "different"})
-	assert not sandbox_service.is_owner(request, {**OWNER, "tid": "different"})
+	assert not sandbox_service.is_owner(request, {**OWNER, "oid": OTHER_OID})
+	assert not sandbox_service.is_owner(request, {**OWNER, "tid": OTHER_OID})
 
 
 def activate(reference):
@@ -86,7 +95,37 @@ def test_enqueue_failure_rolls_back_approval(request_record, monkeypatch):
 		ApprovalService.approve_request(request_record, ADMIN)
 	assert SandboxRequestRepository.get_by_reference(request_record)["status"] == "pending"
 	assert SandboxRepository.get_all() == []
-	assert Storage.read("approvals.json") == []
+	assert approval_count() == 0
+
+
+def test_failed_provisioning_can_be_rejected_after_cleanup(request_record, monkeypatch):
+	from app.services import decommission_service
+
+	ApprovalService.approve_request(request_record, ADMIN)
+	monkeypatch.setattr(sandbox_service.settings, "TERRAFORM_ENABLED", True)
+	monkeypatch.setattr(sandbox_service.TerraformService, "apply_sandbox", lambda *args: (_ for _ in ()).throw(RuntimeError("apply failed")))
+	monkeypatch.setattr(sandbox_service, "write_job_log", lambda *args, **kwargs: None)
+	sandbox_service.run_provision(request_record)
+	assert SandboxRequestRepository.get_by_reference(request_record)["status"] == "failed"
+
+	with pytest.raises(sandbox_service.SandboxError) as own:
+		ApprovalService.reject_failed(request_record, OWNER, "Provisioning kept failing")
+	assert own.value.status_code == 403
+
+	view = ApprovalService.reject_failed(request_record, ADMIN, "Provisioning kept failing")
+	assert view["status"] == "Decommissioning"
+	monkeypatch.setattr(sandbox_service.settings, "TERRAFORM_ENABLED", False)
+	monkeypatch.setattr(decommission_service, "write_job_log", lambda *args, **kwargs: None)
+	decommission_service.run_decommission(request_record)
+
+	final = sandbox_service.view_by_reference(request_record)
+	assert final["status"] == "Rejected"
+	assert final["rejectionReason"] == "Provisioning kept failing"
+	assert SandboxRepository.get_by_id(SandboxRequestRepository.get_by_reference(request_record)["sandbox_id"])["status"] == "decommissioned"
+
+	with pytest.raises(sandbox_service.SandboxError) as again:
+		ApprovalService.reject_failed(request_record, ADMIN, "Provisioning kept failing")
+	assert again.value.status_code == 409
 
 
 def test_extension_failure_keeps_applied_expiry_and_resource_active(request_record, monkeypatch):
@@ -147,11 +186,11 @@ def test_interrupted_running_job_is_recovered(request_record, monkeypatch):
 	from app.services.job_service import update_job, worker_lock
 
 	ApprovalService.approve_request(request_record, ADMIN)
-	job = Storage.read(JOBS)[0]
+	job = list_jobs()[0]
 	update_job(job["id"], status="running", attempts=1)
 	monkeypatch.setattr(sandbox_service.settings, "TERRAFORM_ENABLED", False)
 	assert run_next_job()
-	assert Storage.read(JOBS)[0]["attempts"] == 2
+	assert list_jobs()[0]["attempts"] == 2
 	with worker_lock() as acquired:
 		assert acquired
 		with worker_lock() as second:
@@ -170,7 +209,7 @@ def test_approve_reject_race_has_one_winner(request_record):
 			return False
 	with ThreadPoolExecutor(max_workers=2) as executor:
 		assert sorted(executor.map(decide, (True, False))) == [False, True]
-	assert len(Storage.read("approvals.json")) == 1
+	assert approval_count() == 1
 
 
 def test_decommission_cleanup_is_restart_safe(request_record, monkeypatch):
@@ -183,7 +222,7 @@ def test_decommission_cleanup_is_restart_safe(request_record, monkeypatch):
 	monkeypatch.setattr(decommission_service, "write_job_log", lambda *args: None)
 	decommission_service.run_decommission(request_record)
 	decommission_service.run_decommission(request_record)
-	assert SandboxRepository.get_by_id(request["sandbox_id"]) is None
+	assert SandboxRepository.get_by_id(request["sandbox_id"])["status"] == "decommissioned"
 	assert SandboxRequestRepository.get_by_reference(request_record)["status"] == "decommissioned"
 
 

@@ -4,7 +4,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { useAuth } from "@/hooks/useAuth";
 import { useRole } from "@/hooks/useRole";
 import { useToast } from "@/components/providers/ToastProvider";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, API_BASE_URL } from "@/lib/api";
 import {
   type ExtensionRequest,
   type Notification,
@@ -47,6 +47,7 @@ interface SandboxContextValue {
   approveRequest: (id: string, budgetOverride?: number) => Promise<boolean>;
   rejectRequest: (id: string, reason: string) => Promise<boolean>;
   retryProvisioning: (id: string) => Promise<boolean>;
+  rejectFailed: (id: string, reason: string) => Promise<boolean>;
   approveExtension: (id: string) => Promise<boolean>;
   rejectExtension: (id: string, reason: string) => Promise<boolean>;
   approveDecommission: (id: string) => Promise<boolean>;
@@ -57,6 +58,7 @@ const SandboxContext = createContext<SandboxContextValue | null>(null);
 
 // Poll quickly while Terraform is running so status changes show up promptly.
 const BUSY_POLL_MS = 5_000;
+const ADMIN_POLL_MS = 2_000;
 const IDLE_POLL_MS = 30_000;
 
 const path = (id: string) => encodeURIComponent(id);
@@ -120,19 +122,99 @@ export function SandboxProvider({ children }: { children: React.ReactNode }) {
 
   const busy = useMemo(() => mine.some(isBusy) || all.some(isBusy), [mine, all]);
 
+  // Server push: the backend emits "change" when data changes. Polling remains as a fallback.
+  const [streamLive, setStreamLive] = useState(false);
+  const loadRef = useRef(load);
+  useEffect(() => {
+    loadRef.current = load;
+  });
+
+  useEffect(() => {
+    if (!ready) return;
+    let stopped = false;
+    let controller: AbortController | null = null;
+    let reconnect: ReturnType<typeof setTimeout> | undefined;
+    let lastRefresh = 0;
+    let pending: ReturnType<typeof setTimeout> | undefined;
+
+    const refresh = () => {
+      // Coalesce bursts of changes into at most one refresh per second.
+      const wait = Math.max(0, lastRefresh + 1_000 - Date.now());
+      if (pending) return;
+      pending = setTimeout(() => {
+        pending = undefined;
+        lastRefresh = Date.now();
+        void loadRef.current();
+      }, wait);
+    };
+
+    const connect = async () => {
+      if (stopped) return;
+      controller = new AbortController();
+      try {
+        const token = await getToken();
+        if (!token) throw new Error("no token");
+        const response = await fetch(`${API_BASE_URL}/api/v1/events`, {
+          headers: { Authorization: `Bearer ${token}`, Accept: "text/event-stream" },
+          signal: controller.signal,
+          cache: "no-store",
+        });
+        if (!response.ok || !response.body) throw new Error(`stream ${response.status}`);
+        setStreamLive(true);
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const frames = buffer.split("\n\n");
+          buffer = frames.pop() ?? "";
+          if (frames.some((frame) => frame.includes("event: change"))) refresh();
+        }
+      } catch {
+        // fall through to reconnect
+      }
+      setStreamLive(false);
+      if (!stopped) reconnect = setTimeout(connect, 3_000);
+    };
+
+    void connect();
+    return () => {
+      stopped = true;
+      controller?.abort();
+      clearTimeout(reconnect);
+      clearTimeout(pending);
+      setStreamLive(false);
+    };
+  }, [ready, getToken]);
+
   useEffect(() => {
     if (!ready) return;
     let cancelled = false;
+    let inFlight = false;
     const tick = async () => {
-      if (!cancelled) await load();
+      // Skip while hidden or while the previous refresh is still running.
+      if (cancelled || inFlight || document.hidden) return;
+      inFlight = true;
+      try {
+        await load();
+      } finally {
+        inFlight = false;
+      }
     };
     void tick();
-    const timer = setInterval(tick, busy ? BUSY_POLL_MS : IDLE_POLL_MS);
+    // With the push stream connected, polling is only a slow safety net.
+    const interval = streamLive ? IDLE_POLL_MS : isAdmin ? ADMIN_POLL_MS : busy ? BUSY_POLL_MS : IDLE_POLL_MS;
+    const timer = setInterval(tick, interval);
+    const onVisible = () => void tick();
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       cancelled = true;
       clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [ready, load, busy]);
+  }, [ready, load, busy, isAdmin, streamLive]);
 
   /** Runs an API action, refreshes data, and toasts any error. */
   const run = useCallback(
@@ -196,6 +278,12 @@ export function SandboxProvider({ children }: { children: React.ReactNode }) {
     [run, post]
   );
 
+  const rejectFailed = useCallback(
+    async (id: string, reason: string) =>
+      (await run(() => post(`/admin/sandboxes/${path(id)}/reject-failed`, { reason }))) !== null,
+    [run, post]
+  );
+
   const approveExtension = useCallback(
     async (id: string) => (await run(() => post(`/extensions/${path(id)}/approve`))) !== null,
     [run, post]
@@ -254,6 +342,7 @@ export function SandboxProvider({ children }: { children: React.ReactNode }) {
       approveRequest,
       rejectRequest,
       retryProvisioning,
+      rejectFailed,
       approveExtension,
       rejectExtension,
       approveDecommission,
@@ -278,6 +367,7 @@ export function SandboxProvider({ children }: { children: React.ReactNode }) {
       approveRequest,
       rejectRequest,
       retryProvisioning,
+      rejectFailed,
       approveExtension,
       rejectExtension,
       approveDecommission,

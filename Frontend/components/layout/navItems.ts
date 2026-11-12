@@ -9,6 +9,7 @@ import {
   Home,
   LayoutDashboard,
   Plus,
+  ScrollText,
   Settings,
   Wallet,
   type LucideIcon,
@@ -47,6 +48,7 @@ export const adminNav: NavItemDef[] = [
   { href: "/admin/sandboxes", label: "All sandboxes", icon: Boxes },
   { href: "/admin/costs", label: "Costs", icon: Wallet },
   { href: "/admin/business-units", label: "Business units", icon: Building2 },
+  { href: "/admin/audit", label: "Audit log", icon: ScrollText },
   { href: "/admin/settings", label: "Settings", icon: Settings },
 ];
 

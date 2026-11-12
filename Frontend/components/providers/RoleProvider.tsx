@@ -28,7 +28,7 @@ export default function RoleProvider({ children }: { children: React.ReactNode }
         if (!cancelled) setProfile({ accountId, roles, budgetCurrency: budget_currency, error: null });
       })
       .catch((error: unknown) => {
-        if (!cancelled) setProfile({ accountId, roles: [], budgetCurrency: "INR", error: error instanceof Error ? error.message : "Unable to verify access." });
+        if (!cancelled) setProfile({ accountId, roles: [], budgetCurrency: "USD", error: error instanceof Error ? error.message : "Unable to verify access." });
       });
     return () => { cancelled = true; };
   }, [accountId, inProgress]);
@@ -48,7 +48,7 @@ export default function RoleProvider({ children }: { children: React.ReactNode }
     );
   }
   return (
-    <RoleContext.Provider value={{ roles, isAdmin: roles.includes(ADMIN_ROLE), ready: !!accountId && !!current, budgetCurrency: current?.budgetCurrency ?? "INR" }}>
+    <RoleContext.Provider value={{ roles, isAdmin: roles.includes(ADMIN_ROLE), ready: !!accountId && !!current, budgetCurrency: current?.budgetCurrency ?? "USD" }}>
       {accountId && !current ? <div role="status" className="p-8 text-sm">Verifying access...</div> : <Fragment key={accountId}>{children}</Fragment>}
     </RoleContext.Provider>
   );

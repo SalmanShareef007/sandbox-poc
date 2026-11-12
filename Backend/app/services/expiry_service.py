@@ -10,20 +10,29 @@ from app.services.storage_service import JSONStorageService as Storage
 
 def process_expiries() -> None:
 	with Storage.lock():
-		for request in SandboxRequestRepository.get_all():
-			if request.get("status") != "active" or request.get("operation_in_progress"):
+		# Loaded once per run instead of once per sandbox.
+		approved = {item["sandbox_reference"]: item for item in DecommissionRequestRepository.get_all(statuses=("approved",))}
+		pending_cleanup = {item["sandbox_reference"] for item in DecommissionRequestRepository.get_all(statuses=("pending",))}
+		pending_extension = {item["sandbox_reference"] for item in ExtensionRequestRepository.get_all(statuses=("pending",))}
+		expiry_requests = {
+			(item["sandbox_reference"], item.get("expiry_date"))
+			for item in DecommissionRequestRepository.get_all() if item.get("source") == "expiry"
+		}
+		for request in SandboxRequestRepository.get_all(statuses=("active",), with_history=False):
+			if request.get("operation_in_progress"):
 				continue
-			flagged = next((item for item in DecommissionRequestRepository.get_all() if item.get("sandbox_reference") == request["reference"] and item.get("status") == "approved"), None)
+			reference = request["reference"]
+			flagged = approved.get(reference)
 			if flagged:
 				if flagged.get("flagged_expiry") != request["expiry_date"]:
 					DecommissionRequestRepository.update(flagged["request_id"], {"status": "cancelled", "decision_reason": "Expiry changed; new cleanup approval required."})
-				elif not request.get("failed_operation") and not ExtensionRequestRepository.get_pending_for_sandbox(request["reference"]) and flagged.get("cleanup_not_before", "9999-12-31") <= today().isoformat():
+					approved.pop(reference)
+				elif not request.get("failed_operation") and reference not in pending_extension and (flagged.get("cleanup_not_before") or "9999-12-31") <= today().isoformat():
 					queue_decommission(request, "system")
 					continue
 			days_left = (date.fromisoformat(request["expiry_date"]) - today()).days
 			if days_left > settings.EXPIRING_THRESHOLD_DAYS:
 				continue
-			reference = request["reference"]
 			notification_service.publish(
 				request, f"expiry:{reference}:{request['expiry_date']}",
 				f"{reference}: expires on {request['expiry_date']}. Request an extension or decommission.", "Lifecycle",
@@ -31,11 +40,9 @@ def process_expiries() -> None:
 			notification_service.publish(request, f"expiry-admin:{reference}:{request['expiry_date']}", f"{reference}: expires on {request['expiry_date']}; review extension or cleanup.", "Lifecycle", admins=True)
 			if flagged:
 				continue
-			if days_left >= 0 or ExtensionRequestRepository.get_pending_for_sandbox(reference):
+			if days_left >= 0 or reference in pending_extension or reference in pending_cleanup:
 				continue
-			if DecommissionRequestRepository.get_pending_for_sandbox(reference):
-				continue
-			if any(item.get("sandbox_reference") == reference and item.get("source") == "expiry" and item.get("expiry_date") == request["expiry_date"] for item in DecommissionRequestRepository.get_all()):
+			if (reference, request["expiry_date"]) in expiry_requests:
 				continue
 			DecommissionRequestRepository.create({
 				"sandbox_reference": reference, "sandbox_id": request["sandbox_id"],

@@ -6,7 +6,7 @@ from uuid import uuid4
 from sqlalchemy import delete, select
 
 from app.core.config import settings
-from app.db.database import records, transaction
+from app.db.database import connection, records, transaction
 
 DATA_DIRECTORY = Path(settings.RUNTIME_DIRECTORY)
 
@@ -29,8 +29,8 @@ class JSONStorageService:
     @classmethod
     def read(cls, filename: str) -> list[dict[str, Any]]:
         collection = cls._collection(filename)
-        with transaction() as connection:
-            return list(connection.execute(
+        with connection() as conn:
+            return list(conn.execute(
                 select(records.c.document).where(records.c.collection == collection).order_by(records.c.position)
             ).scalars())
 

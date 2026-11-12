@@ -2,7 +2,7 @@
 
 import { Suspense, useId, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { CircleCheck, ExternalLink, Inbox, Loader, Power, RefreshCw, X } from "lucide-react";
+import { CircleCheck, ExternalLink, Inbox, Loader, Power, RefreshCw, Trash2, X } from "lucide-react";
 import Modal from "@/components/ui/Modal";
 import Tabs, { type TabItem } from "@/components/ui/Tabs";
 import StatusBadge from "@/components/ui/StatusBadge";
@@ -76,6 +76,7 @@ function Approvals() {
     isLoading,
     rejectRequest,
     retryProvisioning,
+    rejectFailed,
     approveDecommission,
     rejectDecommission,
   } = useSandboxes();
@@ -85,6 +86,7 @@ function Approvals() {
   const [tab, setTab] = useState<TabKey>(isTabKey(initialTab) ? initialTab : "pending");
   const [approving, setApproving] = useState<Sandbox | null>(null);
   const [rejecting, setRejecting] = useState<Sandbox | null>(null);
+  const [discarding, setDiscarding] = useState<Sandbox | null>(null);
   const [decommissioning, setDecommissioning] = useState<Sandbox | null>(null);
   const [keeping, setKeeping] = useState<Sandbox | null>(null);
   const [busy, setBusy] = useState(false);
@@ -141,6 +143,7 @@ function Approvals() {
               onApprove={() => setApproving(s)}
               onReject={() => setRejecting(s)}
               onRetry={() => onRetry(s)}
+              onDiscard={() => setDiscarding(s)}
               onApproveDecommission={() => setDecommissioning(s)}
               onRejectDecommission={() => setKeeping(s)}
             />
@@ -209,6 +212,29 @@ function Approvals() {
       />
 
       <ReasonDialog
+        open={discarding !== null}
+        onClose={() => setDiscarding(null)}
+        title="Reject failed sandbox"
+        confirmLabel="Reject and clean up"
+        intro={
+          discarding && (
+            <>
+              Provisioning of <span className="font-mono text-foreground">{discarding.name}</span> failed. Anything
+              already created is deleted, then the request is rejected and {discarding.requestorName} sees your reason.
+              This cannot be undone.
+            </>
+          )
+        }
+        onConfirm={async (reason) => {
+          if (!discarding) return;
+          if (await rejectFailed(discarding.id, reason)) {
+            toast(`Cleaning up ${discarding.name}. It will be marked Rejected when done.`, "info");
+            setDiscarding(null);
+          }
+        }}
+      />
+
+      <ReasonDialog
         open={rejecting !== null}
         onClose={() => setRejecting(null)}
         title="Reject request"
@@ -239,6 +265,7 @@ function RequestCard({
   onApprove,
   onReject,
   onRetry,
+  onDiscard,
   onApproveDecommission,
   onRejectDecommission,
 }: {
@@ -247,6 +274,7 @@ function RequestCard({
   onApprove: () => void;
   onReject: () => void;
   onRetry: () => void;
+  onDiscard: () => void;
   onApproveDecommission: () => void;
   onRejectDecommission: () => void;
 }) {
@@ -333,6 +361,7 @@ function RequestCard({
         onApprove={onApprove}
         onReject={onReject}
         onRetry={onRetry}
+        onDiscard={onDiscard}
         onApproveDecommission={onApproveDecommission}
         onRejectDecommission={onRejectDecommission}
       />
@@ -361,6 +390,7 @@ function CardFooter({
   onApprove,
   onReject,
   onRetry,
+  onDiscard,
   onApproveDecommission,
   onRejectDecommission,
 }: {
@@ -369,6 +399,7 @@ function CardFooter({
   onApprove: () => void;
   onReject: () => void;
   onRetry: () => void;
+  onDiscard: () => void;
   onApproveDecommission: () => void;
   onRejectDecommission: () => void;
 }) {
@@ -434,13 +465,31 @@ function CardFooter({
   }
 
   if (s.status === "Failed" || s.failedOperation) {
+    const canDiscard = s.status === "Failed" && (s.failedOperation ?? "provision") === "provision";
     return (
       <div className={footerCls}>
         <PipelineLink url={s.pipelineRunUrl} />
-        <button onClick={onRetry} className={`${btnPrimary} ml-auto inline-flex items-center gap-2`}>
-          <RefreshCw size={16} aria-hidden="true" />
-          {retryLabels[s.failedOperation ?? "provision"]}
-        </button>
+        <div className="ml-auto flex gap-3">
+          {canDiscard && (
+            <button
+              onClick={onDiscard}
+              disabled={isOwn}
+              title={isOwn ? SELF_APPROVAL_MESSAGE : "Give up: delete anything already created and reject the request"}
+              className="inline-flex items-center gap-2 border border-red-500/40 bg-red-500/10 px-5 py-2.5 text-sm font-medium text-red-700 transition hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-50 dark:text-red-400"
+            >
+              <Trash2 size={16} aria-hidden="true" />
+              Reject and clean up
+            </button>
+          )}
+          <button
+            onClick={onRetry}
+            title="Run Terraform again for this sandbox"
+            className={`${btnPrimary} inline-flex items-center gap-2`}
+          >
+            <RefreshCw size={16} aria-hidden="true" />
+            {retryLabels[s.failedOperation ?? "provision"]}
+          </button>
+        </div>
       </div>
     );
   }

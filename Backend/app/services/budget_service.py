@@ -50,10 +50,10 @@ def refresh_costs() -> None:
 		return
 	now = datetime.now(timezone.utc)
 	refreshed = 0
-	for request in SandboxRequestRepository.get_all():
+	for request in SandboxRequestRepository.get_all(statuses=("active",), with_history=False):
 		if refreshed >= settings.COST_REFRESH_BATCH_SIZE:
 			break
-		if request.get("status") != "active" or not request.get("resource_id"):
+		if not request.get("resource_id"):
 			continue
 		checked = request.get("cost_checked_at")
 		if checked and (now - datetime.fromisoformat(checked)).total_seconds() < settings.COST_REFRESH_SECONDS:

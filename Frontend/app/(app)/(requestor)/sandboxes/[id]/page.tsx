@@ -18,6 +18,7 @@ import Modal from "@/components/ui/Modal";
 import Skeleton from "@/components/ui/Skeleton";
 import SpendChart from "@/components/ui/SpendChart";
 import ExtensionDialog from "@/components/sandbox/ExtensionDialog";
+import LifecycleHistory from "@/components/sandbox/LifecycleHistory";
 import { useSandboxes } from "@/components/providers/SandboxProvider";
 import { useToast } from "@/components/providers/ToastProvider";
 import type { HistoryEntry, HistoryStatus, Sandbox } from "@/lib/types";
@@ -419,6 +420,10 @@ function SandboxDetail({
               <SpendChart values={s.spendHistory} budget={s.budget} />
             </Card>
           )}
+
+          <Card title="Extension & decommission history">
+            <LifecycleHistory reference={s.id} refreshKey={s.history.length} />
+          </Card>
 
           <Card title="Tags">
             <div className="flex flex-wrap gap-2">

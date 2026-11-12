@@ -187,22 +187,27 @@ export default function DashboardPage() {
             />
           ) : (
           <ul className="divide-y divide-border">
-            {notifications.map((n) => (
+            {notifications.slice(0, 5).map((n) => (
               <li key={n.id} className="flex gap-3 px-6 py-4">
                 <span
                   className={`mt-0.5 h-fit shrink-0 rounded-full border px-2.5 py-0.5 text-xs font-medium ${
                     n.category === "Budget"
                       ? "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-400"
-                      : "border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-400"
+                      : n.category === "Lifecycle"
+                        ? "border-cyan-500/30 bg-cyan-500/10 text-cyan-700 dark:text-cyan-400"
+                        : "border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-400"
                   }`}
+                  title={`${n.category} notification`}
                 >
                   {n.category}
                 </span>
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-medium text-foreground">{n.title}</p>
-                  <p className="mt-1 truncate text-xs text-muted">To: {n.to}</p>
+                  <p className="mt-1 truncate text-xs text-muted" title={n.to}>To: {n.to}</p>
                 </div>
-                <span className="shrink-0 text-xs text-muted">{n.when}</span>
+                <span className="shrink-0 text-xs text-muted" title={new Date(n.when).toLocaleString()}>
+                  {new Date(n.when).toLocaleDateString("en-GB", { day: "2-digit", month: "short" })}
+                </span>
               </li>
             ))}
           </ul>

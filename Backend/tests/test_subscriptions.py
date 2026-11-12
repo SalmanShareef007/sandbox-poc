@@ -5,7 +5,6 @@ import pytest
 from app.core.config import settings
 from app.services import subscription_service
 from app.services.sandbox_service import SandboxError
-from app.services.storage_service import JSONStorageService as Storage
 from app.services.terraform_service import TerraformService
 from app.integrations import terraform
 
@@ -35,7 +34,12 @@ def test_existing_state_cannot_be_redirected(subscriptions, monkeypatch):
 
 
 def test_active_requests_block_subscription_change(subscriptions):
-    Storage.write("sandbox_requests.json", [{"status": "active"}])
+    from app.repositories.request_repository import SandboxRequestRepository
+
+    SandboxRequestRepository.create({
+        "sandbox_id": "eng-user-001", "user_id": "0b6bd7f4-1d1f-4a4e-8d8e-5f0f0b0d1001",
+        "tenant_id": "0b6bd7f4-1d1f-4a4e-8d8e-5f0f0b0d0001", "owner": "owner@example.com", "status": "active",
+    })
     with pytest.raises(SandboxError, match="Cannot change subscription"):
         subscription_service.request_change("new-subscription", {"oid": "admin"})
 

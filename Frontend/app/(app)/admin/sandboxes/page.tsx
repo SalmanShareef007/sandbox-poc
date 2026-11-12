@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { Flag, Search, SearchX } from "lucide-react";
+import { Download, Flag, Search, SearchX } from "lucide-react";
+import { downloadCsv } from "@/lib/csv";
 import StatusBadge from "@/components/ui/StatusBadge";
 import Skeleton from "@/components/ui/Skeleton";
 import EmptyState from "@/components/ui/EmptyState";
@@ -64,6 +65,14 @@ export default function AdminSandboxesPage() {
   );
 
   const filtersActive = status !== "All" || unit !== "All" || typeFilter !== "All" || q !== "";
+  const exportCsv = () =>
+    downloadCsv(
+      `sandboxes-${new Date().toISOString().slice(0, 10)}.csv`,
+      ["Reference", "Resource group", "Status", "Requestor", "Requestor email", "Business unit", "Cost centre", "Region",
+        "Budget", "Spent", "Currency", "Expiry", "Days left"],
+      rows.map((s) => [s.id, s.name, s.status, s.requestorName, s.requestorEmail, s.businessUnit, s.costCenter, s.region,
+        s.budget, s.spent ?? "", s.budgetCurrency ?? "", s.expiryDate ?? "", s.daysLeft ?? ""]),
+    );
   const clearFilters = () => {
     setStatus("All");
     setUnit("All");
@@ -123,6 +132,16 @@ export default function AdminSandboxesPage() {
             Clear filters
           </button>
         )}
+
+        <button
+          onClick={exportCsv}
+          disabled={rows.length === 0}
+          title={`Download the ${rows.length} sandbox${rows.length === 1 ? "" : "es"} currently shown as a CSV file`}
+          className="ml-auto inline-flex items-center gap-2 border border-border bg-background px-4 py-2.5 text-sm font-medium text-foreground transition hover:border-accent disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <Download size={16} aria-hidden="true" />
+          Export CSV
+        </button>
       </div>
 
       {isLoading ? (

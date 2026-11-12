@@ -86,19 +86,24 @@ def run_decommission(reference: str) -> None:
 
     write_job_log(reference, "decommission", "\n".join(log))
 
-    for item in DecommissionRequestRepository.get_all():
-        if item.get("sandbox_reference") == reference and item.get("status") == "approved":
+    for item in DecommissionRequestRepository.get_all(statuses=("approved",)):
+        if item.get("sandbox_reference") == reference:
             DecommissionRequestRepository.update(item["request_id"], {"status": "completed"})
 
+    rejected = request.get("cleanup_outcome") == "rejected"
     update_request(
         request["request_id"],
         {
-            "status": "decommissioned",
+            "status": "rejected" if rejected else "decommissioned",
             "failed_operation": None,
             "last_error": None,
-            "decommissioned_at": history_entry("", "")["at"],
+            "cleanup_outcome": None,
+            **({} if rejected else {"decommissioned_at": history_entry("", "")["at"]}),
         },
-        history_entry("Decommissioned", f"{group} and all its resources were deleted"),
+        history_entry("Rejected", "Provisioning could not be completed. Created resources were cleaned up.")
+        if rejected else history_entry("Decommissioned", f"{group} and all its resources were deleted"),
     )
-    AuditService.log_action("system", "sandbox_decommissioned", "sandbox", reference)
+    AuditService.log_action(
+        "system", "failed_sandbox_rejected" if rejected else "sandbox_decommissioned", "sandbox", reference,
+    )
     logger.info("Decommissioned %s", reference)

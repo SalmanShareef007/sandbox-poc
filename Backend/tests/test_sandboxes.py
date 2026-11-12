@@ -4,7 +4,9 @@ from fastapi.testclient import TestClient
 from app.core.security import get_current_user
 from app.main import app
 
-OWNER = {"oid": "owner", "tid": "tenant", "name": "Owner", "preferred_username": "owner@example.com"}
+OWNER = {"oid": "0b6bd7f4-1d1f-4a4e-8d8e-5f0f0b0d1001", "tid": "0b6bd7f4-1d1f-4a4e-8d8e-5f0f0b0d0001", "name": "Owner", "preferred_username": "owner@example.com"}
+OTHER_OID = "0b6bd7f4-1d1f-4a4e-8d8e-5f0f0b0d3001"
+ADMIN_OID = "0b6bd7f4-1d1f-4a4e-8d8e-5f0f0b0d2001"
 PAYLOAD = {
 	"managerEmail": "manager@example.com",
 	"businessUnit": "Engineering", "costCenter": "CC1", "workload": "Web Apps & APIs",
@@ -29,7 +31,7 @@ def test_request_validation_and_owner_isolation(client):
 	reference = response.json()["id"]
 	assert response.json()["spent"] is None
 	assert len(client.get("/api/v1/sandboxes").json()) == 1
-	app.dependency_overrides[get_current_user] = lambda: {**OWNER, "oid": "other"}
+	app.dependency_overrides[get_current_user] = lambda: {**OWNER, "oid": OTHER_OID}
 	assert client.get("/api/v1/sandboxes").json() == []
 	assert client.get(f"/api/v1/sandboxes/{reference}").status_code == 404
 	assert client.get("/api/v1/notifications").json() == []
@@ -74,7 +76,7 @@ def test_configured_business_unit_code_is_used_in_request(client, monkeypatch):
 	from app.core.config import settings
 
 	monkeypatch.setattr(settings, "BUSINESS_UNIT_CATALOG_REQUIRED", True)
-	app.dependency_overrides[get_current_user] = lambda: {**OWNER, "oid": "admin", "roles": ["Sandboxadmin"]}
+	app.dependency_overrides[get_current_user] = lambda: {**OWNER, "oid": ADMIN_OID, "roles": ["Sandboxadmin"]}
 	created = client.post("/api/v1/admin/business-units", json={"name": "Financial Services Group", "shortCode": "FSG", "costCenters": ["CC1"]})
 	assert created.status_code == 201
 	app.dependency_overrides[get_current_user] = lambda: OWNER

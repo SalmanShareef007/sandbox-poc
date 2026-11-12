@@ -4,7 +4,6 @@ import logging
 import re
 import tempfile
 import threading
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -19,8 +18,6 @@ from app.services.storage_service import DATA_DIRECTORY
 from app.services.subscription_service import subscription_id
 
 logger = logging.getLogger(__name__)
-
-LOG_DIRECTORY = DATA_DIRECTORY / "logs"
 
 # Modules created for every sandbox key in environments/dev/main.tf.
 SANDBOX_MODULES = ("sandbox", "rbac", "policy", "budget")
@@ -257,13 +254,30 @@ def summarize_error(exc: Exception) -> str:
     return summary[:600]
 
 
-def write_job_log(reference: str, operation: str, content: str) -> Path:
-    LOG_DIRECTORY.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    path = LOG_DIRECTORY / f"{reference}-{operation}-{stamp}.log"
-    path.write_text(content, encoding="utf-8")
+MAX_LOG_CHARS = 1_000_000
 
-    return path
+
+def write_job_log(reference: str, operation: str, content: str, level: str = "INFO") -> None:
+    """Stores Terraform/Azure output in terraform_logs against the latest job of this operation.
+
+    Logging must never break the operation it describes, so failures are reported to the application log only.
+    """
+    from app.db.database import transaction
+    from app.db.tables import terraform_logs
+    from app.services.job_service import latest_job_id
+    from sqlalchemy import insert
+
+    try:
+        job_id = latest_job_id(reference, operation)
+        if job_id is None:
+            logger.warning("No %s job found for %s; output was not stored.", operation, reference)
+            return
+        message = content if len(content) <= MAX_LOG_CHARS else content[:MAX_LOG_CHARS] + "\n[output truncated]"
+        with transaction() as conn:
+            conn.execute(insert(terraform_logs).values(job_id=job_id, log_level=level, log_stream="output", message=message))
+    except Exception:
+        logger.exception("Could not store %s output for %s", operation, reference)
+
 
 
 class TerraformJobQueue:

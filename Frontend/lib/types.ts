@@ -110,6 +110,33 @@ export interface ExtensionRequest {
   decisionReason?: string | null;
 }
 
+export interface DecommissionRecord {
+  id: string;
+  reason?: string | null;
+  source: string;
+  requestedBy?: string | null;
+  requestedOn: string;
+  status: string;
+  decisionBy?: string | null;
+  decisionReason?: string | null;
+  cleanupEligibleOn?: string | null;
+}
+
+export interface SandboxLifecycle {
+  extensions: ExtensionRequest[];
+  decommissions: DecommissionRecord[];
+}
+
+export interface AuditEntry {
+  log_id: string;
+  actor: string | null;
+  action: string;
+  resource_type: string | null;
+  resource_id: string | null;
+  details: Record<string, unknown>;
+  timestamp: string;
+}
+
 export interface BusinessUnit {
   id: string;
   name: string;

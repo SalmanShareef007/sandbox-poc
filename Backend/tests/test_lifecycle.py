@@ -1,33 +1,50 @@
 from datetime import timedelta
 
+from sqlalchemy import func, select
+
+from app.db.database import connection
+from app.db.tables import notifications
+from app.repositories.extension_repository import DecommissionRequestRepository
 from app.repositories.request_repository import SandboxRequestRepository
+from app.repositories.sandbox_repository import SandboxRepository
 from app.services import budget_service, expiry_service, notification_service, sandbox_service
-from app.services.storage_service import JSONStorageService as Storage
+
+TENANT = "0b6bd7f4-1d1f-4a4e-8d8e-5f0f0b0d0001"
+OWNER_OID = "0b6bd7f4-1d1f-4a4e-8d8e-5f0f0b0d1001"
+OTHER_OID = "0b6bd7f4-1d1f-4a4e-8d8e-5f0f0b0d3001"
+
+
+def notification_count():
+    with connection() as conn:
+        return conn.execute(select(func.count()).select_from(notifications)).scalar_one()
 
 
 def seed_active():
-    return SandboxRequestRepository.create({
-        "sandbox_id": "eng-user-001", "user_id": "owner", "tenant_id": "tenant", "owner": "owner@example.com",
-        "status": "active", "expiry_date": (sandbox_service.today() - timedelta(days=1)).isoformat(),
+    expiry = (sandbox_service.today() - timedelta(days=1)).isoformat()
+    request = SandboxRequestRepository.create({
+        "sandbox_id": "eng-user-001", "user_id": OWNER_OID, "tenant_id": TENANT, "owner": "owner@example.com",
+        "status": "active", "expiry_date": expiry,
         "monthly_budget": 500, "resource_id": "/subscriptions/test/resourceGroups/rg-test",
     })
+    SandboxRepository.create({"sandbox_id": "eng-user-001", "request_reference": request["reference"], "status": "active", "expiry_date": expiry})
+    return request
 
 
 def test_expiry_requests_approval_and_deduplicates_notifications(database):
     request = seed_active()
     expiry_service.process_expiries()
     expiry_service.process_expiries()
-    assert len(Storage.read("decommission_requests.json")) == 1
-    assert len(Storage.read("notifications.json")) == 4
+    assert len(DecommissionRequestRepository.get_all()) == 1
+    assert notification_count() == 4
     assert SandboxRequestRepository.get_by_reference(request["reference"])["status"] == "active"
 
 
 def test_notifications_are_isolated_by_identity(database):
     request = seed_active()
     notification_service.publish(request, "event", "Notice")
-    assert notification_service.list_for_user({"oid": "owner", "tid": "tenant"})
-    assert notification_service.list_for_user({"oid": "other", "tid": "tenant"}) == []
-    assert notification_service.list_for_user({"oid": "owner", "tid": "other"}) == []
+    assert notification_service.list_for_user({"oid": OWNER_OID, "tid": TENANT})
+    assert notification_service.list_for_user({"oid": OTHER_OID, "tid": TENANT}) == []
+    assert notification_service.list_for_user({"oid": OWNER_OID, "tid": OTHER_OID}) == []
 
 
 def test_rejected_expiry_request_is_not_recreated(database):

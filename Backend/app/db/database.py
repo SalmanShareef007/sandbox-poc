@@ -1,30 +1,35 @@
 import argparse
-import json
+import logging
 import os
 from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import lru_cache
 from pathlib import Path
 
-from sqlalchemy import Column, Integer, JSON, MetaData, String, Table, create_engine, event, select
+from sqlalchemy import create_engine, event, select, text
 from sqlalchemy.engine import Connection, Engine, make_url
+from sqlalchemy.exc import OperationalError
 
 from app.core.config import settings
+from app.db.errors import DataUnavailableError
+from app.db.tables import COUNTER_SEEDS, ROLE_SEEDS, metadata, mutex, records, reference_counters, roles  # noqa: F401
 
-metadata = MetaData()
-mutex = Table("platform_mutex", metadata, Column("id", Integer, primary_key=True))
-records = Table(
-	"platform_records", metadata,
-	Column("collection", String(80), primary_key=True),
-	Column("record_key", String(100), primary_key=True),
-	Column("position", Integer, nullable=False),
-	Column("document", JSON, nullable=False),
-)
+logger = logging.getLogger("app.db")
+
+# Serialises write transactions across API and worker processes; reads never take it.
+WRITE_LOCK_KEY = 81924670
+UPGRADE_SQL = Path(__file__).with_name("schema_upgrade.sql")
 current_connection: ContextVar[Connection | None] = ContextVar("database_connection", default=None)
+# Caches of database-assigned IDs register here so a rolled-back transaction cannot leave phantom entries.
+rollback_hooks: list = []
 
 
 def is_production() -> bool:
 	return settings.APP_ENV == "production" or bool(os.environ.get("WEBSITE_INSTANCE_ID"))
+
+
+def _first_line(exc: OperationalError) -> str:
+	return str(exc.orig).splitlines()[0][:200]
 
 
 @lru_cache
@@ -41,78 +46,119 @@ def get_engine() -> Engine:
 		url = url.set(drivername="postgresql+psycopg")
 	if is_production() and url.get_backend_name() != "postgresql":
 		raise RuntimeError("Production requires PostgreSQL; SQLite is for local development only.")
-	if url.get_backend_name() == "sqlite" and url.database and url.database != ":memory:":
-		Path(url.database).parent.mkdir(parents=True, exist_ok=True)
-	options = {"connect_args": {"timeout": 30, "check_same_thread": False}} if url.get_backend_name() == "sqlite" else {}
-	engine = create_engine(url, pool_pre_ping=True, **options)
-	if engine.dialect.name == "sqlite":
+	if url.get_backend_name() == "sqlite":
+		if url.database and url.database != ":memory:":
+			Path(url.database).parent.mkdir(parents=True, exist_ok=True)
+		engine = create_engine(url, pool_pre_ping=True, connect_args={"timeout": 30, "check_same_thread": False})
+
 		@event.listens_for(engine, "connect")
 		def configure_sqlite(connection, connection_record):
 			connection.execute("PRAGMA journal_mode=WAL")
 			connection.execute("PRAGMA busy_timeout=30000")
-	return engine
+			connection.execute("PRAGMA foreign_keys=ON")
+
+		return engine
+	return create_engine(
+		url,
+		pool_pre_ping=True,
+		pool_size=settings.DB_POOL_SIZE,
+		max_overflow=settings.DB_MAX_OVERFLOW,
+		pool_timeout=settings.DB_POOL_TIMEOUT_SECONDS,
+		pool_recycle=settings.DB_POOL_RECYCLE_SECONDS,
+		connect_args={
+			"connect_timeout": settings.DB_CONNECT_TIMEOUT_SECONDS,
+			"keepalives": 1, "keepalives_idle": 30, "keepalives_interval": 10, "keepalives_count": 3,
+			"options": "-c statement_timeout=60000",
+		},
+	)
+
+
+def _statements(sql: str) -> list[str]:
+	body = "\n".join(line for line in sql.splitlines() if not line.strip().startswith("--"))
+	return [statement.strip() for statement in body.split(";") if statement.strip()]
 
 
 def initialize_database() -> None:
+	"""Creates missing tables, then (PostgreSQL only) applies the idempotent upgrade script and seeds."""
 	engine = get_engine()
-	metadata.create_all(engine)
-	with engine.begin() as connection:
-		if connection.execute(select(mutex.c.id).where(mutex.c.id == 1)).scalar_one_or_none() is None:
-			connection.execute(mutex.insert().values(id=1))
+	try:
+		metadata.create_all(engine)
+		with engine.begin() as conn:
+			if engine.dialect.name == "postgresql":
+				conn.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": WRITE_LOCK_KEY})
+				for statement in _statements(UPGRADE_SQL.read_text(encoding="utf-8")):
+					conn.exec_driver_sql(statement)
+			else:
+				for name, description in ROLE_SEEDS:
+					if conn.execute(select(roles.c.id).where(roles.c.name == name)).first() is None:
+						conn.execute(roles.insert().values(name=name, description=description))
+			if conn.execute(select(mutex.c.id).where(mutex.c.id == 1)).first() is None:
+				conn.execute(mutex.insert().values(id=1))
+			for prefix, start in COUNTER_SEEDS.items():
+				if conn.execute(select(reference_counters.c.prefix).where(reference_counters.c.prefix == prefix)).first() is None:
+					conn.execute(reference_counters.insert().values(prefix=prefix, last_value=start))
+	except Exception:
+		logger.exception("Database initialisation failed")
+		raise
+	logger.info("Database initialised (%s)", engine.dialect.name)
 
 
 @contextmanager
 def transaction():
+	"""Write transaction. Nested use joins the outer transaction; commits on success, rolls back on error."""
 	existing = current_connection.get()
 	if existing is not None:
 		yield existing
 		return
-	with get_engine().connect() as connection:
-		if connection.dialect.name == "sqlite":
-			connection.exec_driver_sql("BEGIN IMMEDIATE")
-		else:
-			connection.begin()
-			connection.execute(select(mutex.c.id).where(mutex.c.id == 1).with_for_update()).scalar_one()
-		token = current_connection.set(connection)
+	try:
+		conn = get_engine().connect()
+	except OperationalError as exc:
+		logger.error("Database connection failed: %s", _first_line(exc))
+		raise DataUnavailableError() from exc
+	with conn:
 		try:
-			yield connection
-			connection.commit()
+			if conn.dialect.name == "sqlite":
+				conn.exec_driver_sql("BEGIN IMMEDIATE")
+			else:
+				conn.begin()
+				conn.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": WRITE_LOCK_KEY})
+		except OperationalError as exc:
+			logger.error("Could not start database transaction: %s", _first_line(exc))
+			raise DataUnavailableError() from exc
+		token = current_connection.set(conn)
+		try:
+			yield conn
+			conn.commit()
 		except BaseException:
-			connection.rollback()
+			conn.rollback()
+			for hook in rollback_hooks:
+				hook()
 			raise
 		finally:
 			current_connection.reset(token)
 
 
+@contextmanager
+def connection():
+	"""Lock-free connection for reads. Reuses the ambient transaction when there is one."""
+	existing = current_connection.get()
+	if existing is not None:
+		yield existing
+		return
+	try:
+		conn = get_engine().connect()
+	except OperationalError as exc:
+		logger.error("Database connection failed: %s", _first_line(exc))
+		raise DataUnavailableError() from exc
+	with conn:
+		yield conn
+		conn.rollback()
+
+
 def check_database() -> None:
-	with get_engine().connect() as connection:
-		connection.execute(select(mutex.c.id).where(mutex.c.id == 1)).scalar_one()
-		connection.execute(select(records.c.record_key).limit(1))
-
-
-def import_json(directory: Path) -> int:
-	from app.services.storage_service import JSONStorageService
-
-	imported = 0
-	with transaction():
-		for path in sorted(directory.glob("*.json")):
-			documents = json.loads(path.read_text(encoding="utf-8-sig"))
-			if not isinstance(documents, list) or not all(isinstance(item, dict) for item in documents):
-				raise ValueError(f"Expected a list of records: {path.name}")
-			if JSONStorageService.read(path.name):
-				raise ValueError(f"Collection already contains data: {path.name}")
-			if documents and path.name in ("sandboxes.json", "sandbox_requests.json") and not settings.ENTRA_TENANT_ID:
-				raise ValueError("Set ENTRA_TENANT_ID before importing ownership records.")
-			if path.name == "sandbox_requests.json":
-				for document in documents:
-					document["user_id"] = document.get("user_id") or document.get("principal_id")
-					document["tenant_id"] = settings.ENTRA_TENANT_ID
-			JSONStorageService.write(path.name, documents)
-			imported += len(documents)
-			from app.services.sandbox_service import import_existing_sandboxes
-
-			imported += import_existing_sandboxes()
-	return imported
+	with connection() as conn:
+		conn.execute(text("SELECT 1 FROM sandbox_requests LIMIT 1"))
+		conn.execute(text("SELECT 1 FROM notifications LIMIT 1"))
 
 
 def main() -> None:
@@ -120,8 +166,11 @@ def main() -> None:
 	parser.add_argument("command", choices=["init", "import-json"])
 	parser.add_argument("--directory", type=Path, default=Path(settings.RUNTIME_DIRECTORY))
 	arguments = parser.parse_args()
+	logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 	initialize_database()
 	if arguments.command == "import-json":
+		from app.db.importer import import_json
+
 		print(f"Imported {import_json(arguments.directory)} records.")
 
 

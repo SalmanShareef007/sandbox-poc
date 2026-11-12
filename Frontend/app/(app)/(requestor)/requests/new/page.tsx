@@ -31,8 +31,10 @@ const prettyDate = (d: Date) =>
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
-    <div>
-      <label className="mb-2 block text-sm font-medium text-foreground">{label}</label>
+    <div title={hint}>
+      <label className="mb-2 block text-sm font-medium text-foreground">
+        {label} <span className="text-red-500" aria-hidden="true">*</span>
+      </label>
       {children}
       {hint && <p className="mt-1.5 text-xs text-muted">{hint}</p>}
     </div>
@@ -81,17 +83,39 @@ export default function NewRequestPage() {
   const seq = String(sandboxes.filter((s) => s.name.startsWith(prefix)).length + 1).padStart(3, "0");
   const name = `${prefix}${seq}`;
 
-  const budgetNum = Number(budget ?? String(maxBudget));
-  const valid =
-    businessUnits.some((unit) => unit.name === businessUnit) &&
-    managerEmail.trim() &&
-    costCenter.trim() &&
-    description.trim() &&
-    justification.trim().length >= 20 &&
-    budgetNum > 0 && budgetNum <= maxBudget;
+  const budgetNum = Number(budget ?? "");
+  const budgetOver = Number.isFinite(budgetNum) && budgetNum > maxBudget;
+  const emailOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(managerEmail.trim());
+
+  const missingFields = () => {
+    const missing: string[] = [];
+    if (!businessUnits.some((unit) => unit.name === businessUnit)) missing.push("Business unit");
+    if (!costCenter.trim()) missing.push("Cost centre");
+    if (!managerEmail.trim()) missing.push("Manager email");
+    else if (!emailOk) missing.push("Manager email (enter a valid address)");
+    if (!workload) missing.push("Intended workload");
+    if (!region) missing.push("Region");
+    if (!role) missing.push("Access role");
+    if (!description.trim()) missing.push("Workload description");
+    if (justification.trim().length < 20) missing.push("Business justification (minimum 20 characters)");
+    if (!budget?.trim() || !(budgetNum > 0)) missing.push(`Estimated budget (greater than ${money(0)})`);
+    if (!duration) missing.push("Duration");
+    return missing;
+  };
+
+  const valid = missingFields().length === 0 && !budgetOver;
 
   const onSubmit = async () => {
-    if (!valid || submitting || configuration?.subscriptionChangePending || !managerInput.current?.reportValidity()) return;
+    if (submitting || configuration?.subscriptionChangePending) return;
+    const missing = missingFields();
+    if (missing.length) {
+      toast(`Please complete: ${missing.join(", ")}.`, "error");
+      return;
+    }
+    if (budgetOver) {
+      toast(`Budget cannot exceed the maximum of ${money(maxBudget)}. You entered ${money(budgetNum, 2)}.`, "error");
+      return;
+    }
     setSubmitting(true);
     const created = await addRequest({
       businessUnit,
@@ -234,10 +258,19 @@ export default function NewRequestPage() {
                 min={1}
                 max={maxBudget}
                 step="0.01"
-                className={inputCls}
-                value={budget ?? String(maxBudget)}
+                required
+                title={`Enter an amount up to ${money(maxBudget)}`}
+                aria-invalid={budgetOver}
+                className={`${inputCls} ${budgetOver ? "border-red-500 focus:border-red-500" : ""}`}
+                value={budget ?? ""}
+                placeholder={`Up to ${money(maxBudget)}`}
                 onChange={(e) => setBudget(e.target.value)}
               />
+              {budgetOver && (
+                <p role="alert" className="mt-1.5 text-xs font-medium text-red-600 dark:text-red-400">
+                  Budget cannot exceed {money(maxBudget)}.
+                </p>
+              )}
             </Field>
             <Field label="Duration" hint={`Expiry date: ${prettyDate(expiry)}`}>
               <select className={inputCls} value={duration} onChange={(e) => setDuration(Number(e.target.value))}>
@@ -256,7 +289,8 @@ export default function NewRequestPage() {
           </Link>
           <button
             onClick={onSubmit}
-            disabled={!valid || submitting || configuration.subscriptionChangePending}
+            disabled={submitting || configuration.subscriptionChangePending}
+            title={valid ? "Send this request to IT Administrators" : "Some required fields are missing. Click to see which."}
             className="bg-accent-gradient rounded-full px-6 py-2.5 text-sm font-medium text-white shadow-accent transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {submitting ? "Submitting…" : "Submit for approval"}

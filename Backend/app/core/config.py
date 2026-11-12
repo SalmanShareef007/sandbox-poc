@@ -36,9 +36,13 @@ class Settings(BaseSettings):
     ACS_SENDER_ADDRESS: str | None = None
     ACS_ENDPOINT: str | None = None
     ADMIN_NOTIFICATION_EMAILS: list[EmailStr] = Field(default_factory=list, max_length=4)
+    # Base URL of the web app, used for links in emails and chat alerts.
+    FRONTEND_BASE_URL: str | None = None
+    # Incoming webhook (Microsoft Teams Workflows or Slack) that receives admin notifications.
+    ADMIN_WEBHOOK_URL: SecretStr | None = None
     BUDGET_ALERT_THRESHOLDS: list[float] = [75, 90, 100]
     COST_MANAGEMENT_ENABLED: bool = True
-    BUDGET_CURRENCY: str = Field(default="INR", pattern="^[A-Z]{3}$")
+    BUDGET_CURRENCY: str = Field(default="USD", pattern="^[A-Z]{3}$")
     MAX_SANDBOX_BUDGET: float = Field(default=500, gt=0, allow_inf_nan=False)
     BUSINESS_UNIT_CATALOG_REQUIRED: bool = True
     COST_CENTER_MODE: Literal["business_unit", "shared", "free_text"] = "business_unit"
@@ -53,6 +57,11 @@ class Settings(BaseSettings):
     APPLICATIONINSIGHTS_CONNECTION_STRING: SecretStr | None = None
  
     DATABASE_URL: SecretStr | None = None
+    DB_POOL_SIZE: int = Field(default=5, ge=1, le=50)
+    DB_MAX_OVERFLOW: int = Field(default=10, ge=0, le=100)
+    DB_POOL_TIMEOUT_SECONDS: int = Field(default=30, ge=1)
+    DB_POOL_RECYCLE_SECONDS: int = Field(default=1800, ge=60)
+    DB_CONNECT_TIMEOUT_SECONDS: int = Field(default=10, ge=1)
  
     # Sandbox rules
     ADMIN_ROLE: str = "Sandboxadmin"

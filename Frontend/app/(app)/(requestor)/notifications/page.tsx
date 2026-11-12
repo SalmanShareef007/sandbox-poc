@@ -78,9 +78,9 @@ export default function NotificationsPage() {
               </span>
               <div className="min-w-0 flex-1">
                 <p className="text-sm font-medium text-foreground">{n.title}</p>
-                <p className="mt-1 text-xs text-muted">To: {n.to}</p>
+                <p className="mt-1 text-xs text-muted" title={n.to}>To: {n.to}</p>
               </div>
-              <span className="shrink-0 text-xs text-muted">{new Date(n.when).toLocaleString()}</span>
+              <span className="shrink-0 text-xs text-muted" title="Time the notification was created">{new Date(n.when).toLocaleString()}</span>
             </li>
           ))}
         </ul>

@@ -3,8 +3,8 @@
 import type { Sandbox } from "@/lib/types";
 import { useRole } from "@/hooks/useRole";
 
-export const money = (n: number | null, digits = 0, currency = "INR") =>
-  n === null ? "Unavailable" : n.toLocaleString("en-IN", {
+export const money = (n: number | null, digits = 0, currency = "USD") =>
+  n === null ? "Unavailable" : n.toLocaleString("en-US", {
     style: "currency",
     currency,
     minimumFractionDigits: digits,
@@ -12,11 +12,11 @@ export const money = (n: number | null, digits = 0, currency = "INR") =>
   });
 
 export const usedPct = (s: Pick<Sandbox, "spent" | "budget" | "costCurrency" | "budgetCurrency">) =>
-  s.budget && s.spent !== null && (s.costCurrency ?? "INR") === (s.budgetCurrency ?? "INR")
+  s.budget && s.spent !== null && (s.costCurrency ?? "USD") === (s.budgetCurrency ?? "USD")
     ? Math.round((s.spent / s.budget) * 100) : 0;
 
 export const hasComparableCost = (s: Sandbox): s is Sandbox & { spent: number } =>
-  s.spent !== null && (s.costCurrency ?? "INR") === (s.budgetCurrency ?? "INR");
+  s.spent !== null && (s.costCurrency ?? "USD") === (s.budgetCurrency ?? "USD");
 
 export function useMoney() {
   const { budgetCurrency } = useRole();

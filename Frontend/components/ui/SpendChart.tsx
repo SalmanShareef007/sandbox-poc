@@ -8,7 +8,7 @@ const H = 200;
 const PAD = { top: 16, right: 12, bottom: 24, left: 12 };
 
 interface SpendChartProps {
-  /** Cumulative spend in INR, one value per week. */
+  /** Cumulative spend in USD, one value per week. */
   values: number[];
   budget?: number;
 }

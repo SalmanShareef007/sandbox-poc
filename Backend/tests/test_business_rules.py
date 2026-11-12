@@ -83,38 +83,50 @@ def test_extension_can_request_a_date():
 
 def test_budget_notification_cc_includes_administrator(database, monkeypatch):
     from app.services import notification_service
-    from app.services.storage_service import JSONStorageService as Storage
 
     monkeypatch.setattr(settings, "ADMIN_NOTIFICATION_EMAILS", ["admin@example.com"])
-    notification_service.publish({"owner": "owner@example.com", "user_id": "owner", "tenant_id": "tenant"}, "budget", "Budget reached", "Budget")
-    notification = Storage.read(notification_service.NOTIFICATIONS)[0]
+    notification_service.publish({"owner": "owner@example.com", "user_id": "0b6bd7f4-1d1f-4a4e-8d8e-5f0f0b0d1001", "tenant_id": "0b6bd7f4-1d1f-4a4e-8d8e-5f0f0b0d0001"}, "budget", "Budget reached", "Budget")
+    from sqlalchemy import select
+    from app.db.database import connection
+    from app.db.tables import notifications
+
+    with connection() as conn:
+        row = conn.execute(select(notifications.c.recipients, notifications.c.cc_recipients)).one()
+    notification = {"recipients": row.recipients, "cc_recipients": row.cc_recipients}
     assert notification_service.email_recipients(notification) == {"to": [{"address": "owner@example.com"}], "cc": [{"address": "admin@example.com"}]}
 
 
 def test_cleanup_flag_waits_for_grace_and_extension_blocks_it(database, monkeypatch):
     from datetime import timedelta
     from app.repositories.request_repository import SandboxRequestRepository
+    from app.repositories.sandbox_repository import SandboxRepository
     from app.repositories.extension_repository import ExtensionRequestRepository
     from app.services import expiry_service, sandbox_service
     from app.services.approval_service import ApprovalService
-    from app.services.storage_service import JSONStorageService as Storage
+    from app.services.job_service import list_jobs
 
+    tenant = "0b6bd7f4-1d1f-4a4e-8d8e-5f0f0b0d0001"
     monkeypatch.setattr(settings, "EXPIRY_GRACE_DAYS", 7)
+    expiry = (sandbox_service.today() - timedelta(days=1)).isoformat()
     request = SandboxRequestRepository.create({
-        "sandbox_id": "eng-owner-001", "user_id": "owner", "tenant_id": "tenant", "owner": "owner@example.com",
+        "sandbox_id": "eng-owner-001", "user_id": "0b6bd7f4-1d1f-4a4e-8d8e-5f0f0b0d1001", "tenant_id": tenant, "owner": "owner@example.com",
         "business_unit": "Engineering", "cost_center": "CC1", "monthly_budget": 500, "status": "active",
-        "expiry_date": (sandbox_service.today() - timedelta(days=1)).isoformat(),
+        "expiry_date": expiry,
     })
-    admin = {"oid": "admin", "tid": "tenant", "preferred_username": "admin@example.com"}
+    SandboxRepository.create({"sandbox_id": "eng-owner-001", "request_reference": request["reference"], "status": "active", "expiry_date": expiry})
+    admin = {"oid": "0b6bd7f4-1d1f-4a4e-8d8e-5f0f0b0d2001", "tid": tenant, "preferred_username": "admin@example.com"}
     view = ApprovalService.flag_cleanup(request["reference"], "Expired resources ready for cleanup", admin)
     assert view["cleanupFlagged"]
-    assert Storage.read("terraform_jobs.json") == []
-    ExtensionRequestRepository.create({"sandbox_reference": request["reference"]})
+    assert list_jobs() == []
+    ExtensionRequestRepository.create({
+        "sandbox_reference": request["reference"], "extra_days": 30,
+        "requested_expiry_date": (sandbox_service.today() + timedelta(days=29)).isoformat(), "reason": "More time",
+    })
     original_today = sandbox_service.today()
     monkeypatch.setattr(expiry_service, "today", lambda: original_today + timedelta(days=10))
     expiry_service.process_expiries()
-    assert Storage.read("terraform_jobs.json") == []
+    assert list_jobs() == []
     extension = ExtensionRequestRepository.get_all()[0]
     ExtensionRequestRepository.update(extension["request_id"], {"status": "rejected"})
     expiry_service.process_expiries()
-    assert Storage.read("terraform_jobs.json")[0]["operation"] == "decommission"
+    assert list_jobs()[0]["operation"] == "decommission"

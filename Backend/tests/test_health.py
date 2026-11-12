@@ -1,7 +1,6 @@
 from fastapi.testclient import TestClient
 
 from app.main import app
-from app.services.storage_service import JSONStorageService as Storage
 
 
 def test_health_and_database_readiness(database):
@@ -13,6 +12,15 @@ def test_health_and_database_readiness(database):
 
 
 def test_api_startup_does_not_execute_jobs(database):
-	Storage.write("terraform_jobs.json", [{"id": "pending", "status": "queued"}])
+	from app.repositories.request_repository import SandboxRequestRepository
+	from app.repositories.sandbox_repository import SandboxRepository
+	from app.services.job_service import enqueue, list_jobs
+
+	request = SandboxRequestRepository.create({
+		"sandbox_id": "eng-user-001", "user_id": "0b6bd7f4-1d1f-4a4e-8d8e-5f0f0b0d1001",
+		"tenant_id": "0b6bd7f4-1d1f-4a4e-8d8e-5f0f0b0d0001", "owner": "owner@example.com", "status": "provisioning",
+	})
+	SandboxRepository.create({"sandbox_id": "eng-user-001", "request_reference": request["reference"]})
+	enqueue(request["reference"], "provision", "0b6bd7f4-1d1f-4a4e-8d8e-5f0f0b0d9001")
 	with TestClient(app):
-		assert Storage.read("terraform_jobs.json")[0]["status"] == "queued"
+		assert list_jobs()[0]["status"] == "queued"

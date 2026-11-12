@@ -17,6 +17,7 @@ const titles: Record<string, string> = {
   "/admin/extensions": "Extension requests",
   "/admin/sandboxes": "All sandboxes",
   "/admin/costs": "Costs",
+  "/admin/audit": "Audit log",
 };
 
 export default function Topbar() {
