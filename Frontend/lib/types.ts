@@ -83,6 +83,9 @@ export interface Sandbox {
   expiryDate?: string | null;
   cleanupFlagged?: boolean;
   cleanupEligibleOn?: string | null;
+  cleanupAvailable?: boolean;
+  decommissionSource?: string | null;
+  decommissionOwnerAccepted?: boolean;
 }
 
 export interface Notification {
@@ -91,6 +94,8 @@ export interface Notification {
   title: string;
   to: string;
   when: string;
+  read: boolean;
+  sandboxId?: string | null;
 }
 
 export type ExtensionStatus = "Pending" | "Approved" | "Rejected";

@@ -122,6 +122,10 @@ ALTER TABLE approvals ADD CONSTRAINT chk_approval_request_reference CHECK
 
 CREATE INDEX IF NOT EXISTS idx_notifications_pending ON notifications (created_at) WHERE email_status = 'pending';
 
+ALTER TABLE notifications
+    ADD COLUMN IF NOT EXISTS owner_read_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS admin_read_at TIMESTAMPTZ;
+
 INSERT INTO roles (id, name, description) VALUES
     (gen_random_uuid(), 'Admin', 'Manages sandbox requests and approvals'),
     (gen_random_uuid(), 'User', 'Can request and manage assigned sandboxes')

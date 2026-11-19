@@ -147,7 +147,7 @@ export default function NewRequestPage() {
           Administrators for approval.
         </p>
         <button
-          onClick={() => router.push("/sandboxes")}
+          onClick={() => { setSubmittedName(null); router.push("/sandboxes"); }}
           className="bg-accent-gradient mt-8 rounded-full px-6 py-3 font-medium text-white shadow-accent transition hover:brightness-110"
         >
           Go to My sandboxes

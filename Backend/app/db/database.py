@@ -6,7 +6,7 @@ from contextvars import ContextVar
 from functools import lru_cache
 from pathlib import Path
 
-from sqlalchemy import create_engine, event, select, text
+from sqlalchemy import create_engine, event, inspect, select, text
 from sqlalchemy.engine import Connection, Engine, make_url
 from sqlalchemy.exc import OperationalError
 
@@ -78,6 +78,13 @@ def _statements(sql: str) -> list[str]:
 	return [statement.strip() for statement in body.split(";") if statement.strip()]
 
 
+def _upgrade_sqlite_notification_reads(conn: Connection) -> None:
+	columns = {column["name"] for column in inspect(conn).get_columns("notifications")}
+	for name in ("owner_read_at", "admin_read_at"):
+		if name not in columns:
+			conn.exec_driver_sql(f"ALTER TABLE notifications ADD COLUMN {name} DATETIME")
+
+
 def initialize_database() -> None:
 	"""Creates missing tables, then (PostgreSQL only) applies the idempotent upgrade script and seeds."""
 	engine = get_engine()
@@ -89,6 +96,7 @@ def initialize_database() -> None:
 				for statement in _statements(UPGRADE_SQL.read_text(encoding="utf-8")):
 					conn.exec_driver_sql(statement)
 			else:
+				_upgrade_sqlite_notification_reads(conn)
 				for name, description in ROLE_SEEDS:
 					if conn.execute(select(roles.c.id).where(roles.c.name == name)).first() is None:
 						conn.execute(roles.insert().values(name=name, description=description))

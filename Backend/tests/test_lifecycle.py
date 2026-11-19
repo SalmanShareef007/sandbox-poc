@@ -2,6 +2,7 @@ from datetime import timedelta
 
 from sqlalchemy import func, select
 
+from app.core.config import settings
 from app.db.database import connection
 from app.db.tables import notifications
 from app.repositories.extension_repository import DecommissionRequestRepository
@@ -19,8 +20,8 @@ def notification_count():
         return conn.execute(select(func.count()).select_from(notifications)).scalar_one()
 
 
-def seed_active():
-    expiry = (sandbox_service.today() - timedelta(days=1)).isoformat()
+def seed_active(days_expired=1):
+    expiry = (sandbox_service.today() - timedelta(days=days_expired)).isoformat()
     request = SandboxRequestRepository.create({
         "sandbox_id": "eng-user-001", "user_id": OWNER_OID, "tenant_id": TENANT, "owner": "owner@example.com",
         "status": "active", "expiry_date": expiry,
@@ -30,8 +31,9 @@ def seed_active():
     return request
 
 
-def test_expiry_requests_approval_and_deduplicates_notifications(database):
-    request = seed_active()
+def test_expiry_requests_approval_and_deduplicates_notifications(database, monkeypatch):
+    monkeypatch.setattr(settings, "EXPIRY_GRACE_DAYS", 7)
+    request = seed_active(days_expired=7)
     expiry_service.process_expiries()
     expiry_service.process_expiries()
     assert len(DecommissionRequestRepository.get_all()) == 1
@@ -47,15 +49,54 @@ def test_notifications_are_isolated_by_identity(database):
     assert notification_service.list_for_user({"oid": OWNER_OID, "tid": OTHER_OID}) == []
 
 
-def test_rejected_expiry_request_is_not_recreated(database):
+def test_rejected_expiry_request_is_not_recreated(database, monkeypatch):
     from app.repositories.extension_repository import DecommissionRequestRepository
 
-    seed_active()
+    monkeypatch.setattr(settings, "EXPIRY_GRACE_DAYS", 7)
+    seed_active(days_expired=7)
     expiry_service.process_expiries()
     decommission = DecommissionRequestRepository.get_all()[0]
     DecommissionRequestRepository.update(decommission["request_id"], {"status": "rejected"})
     expiry_service.process_expiries()
     assert len(DecommissionRequestRepository.get_all()) == 1
+
+
+def test_notification_read_state_is_separate_for_owner_and_admin(database):
+    request = seed_active()
+    notification_service.publish(request, "owner-notice", "Owner notice", "Approval")
+    notification_service.publish(request, "admin-notice", "Admin notice", "Lifecycle", admins=True)
+    admin = {"oid": "0b6bd7f4-1d1f-4a4e-8d8e-5f0f0b0d2001", "tid": TENANT, "roles": ["Sandboxadmin"]}
+
+    owner_notices = notification_service.list_for_user({"oid": OWNER_OID, "tid": TENANT})
+    admin_notices = notification_service.list_for_user(admin)
+    assert {notice["title"]: notice["read"] for notice in owner_notices}["Owner notice"] is False
+    assert {notice["title"]: notice["read"] for notice in admin_notices}["Admin notice"] is False
+
+    notification_service.mark_all_read(admin)
+    assert {notice["title"]: notice["read"] for notice in notification_service.list_for_user(admin)}["Admin notice"] is True
+    other_admin = {"oid": OTHER_OID, "tid": TENANT, "roles": ["Sandboxadmin"]}
+    assert {notice["title"]: notice["read"] for notice in notification_service.list_for_user(other_admin)}["Admin notice"] is False
+    assert {notice["title"]: notice["read"] for notice in notification_service.list_for_user({"oid": OWNER_OID, "tid": TENANT})}["Owner notice"] is False
+
+    notification_service.mark_all_read({"oid": OWNER_OID, "tid": TENANT})
+    assert {notice["title"]: notice["read"] for notice in notification_service.list_for_user({"oid": OWNER_OID, "tid": TENANT})}["Owner notice"] is True
+
+
+def test_sqlite_notification_read_columns_upgrade_existing_schema():
+    from sqlalchemy import create_engine, inspect
+
+    from app.db.database import _upgrade_sqlite_notification_reads
+
+    engine = create_engine("sqlite://")
+    try:
+        with engine.begin() as conn:
+            conn.exec_driver_sql("CREATE TABLE notifications (id TEXT PRIMARY KEY)")
+            _upgrade_sqlite_notification_reads(conn)
+            _upgrade_sqlite_notification_reads(conn)
+            columns = {column["name"] for column in inspect(conn).get_columns("notifications")}
+        assert {"owner_read_at", "admin_read_at"} <= columns
+    finally:
+        engine.dispose()
 
 
 def test_cost_response_parses_real_daily_amounts():

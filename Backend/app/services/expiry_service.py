@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 
 from app.core.config import settings
 from app.repositories.extension_repository import DecommissionRequestRepository, ExtensionRequestRepository
@@ -30,7 +30,8 @@ def process_expiries() -> None:
 				elif not request.get("failed_operation") and reference not in pending_extension and (flagged.get("cleanup_not_before") or "9999-12-31") <= today().isoformat():
 					queue_decommission(request, "system")
 					continue
-			days_left = (date.fromisoformat(request["expiry_date"]) - today()).days
+			expiry_date = date.fromisoformat(request["expiry_date"])
+			days_left = (expiry_date - today()).days
 			if days_left > settings.EXPIRING_THRESHOLD_DAYS:
 				continue
 			notification_service.publish(
@@ -40,7 +41,8 @@ def process_expiries() -> None:
 			notification_service.publish(request, f"expiry-admin:{reference}:{request['expiry_date']}", f"{reference}: expires on {request['expiry_date']}; review extension or cleanup.", "Lifecycle", admins=True)
 			if flagged:
 				continue
-			if days_left >= 0 or reference in pending_extension or reference in pending_cleanup:
+			cleanup_not_before = expiry_date + timedelta(days=settings.EXPIRY_GRACE_DAYS)
+			if today() < cleanup_not_before or reference in pending_extension or reference in pending_cleanup:
 				continue
 			if (reference, request["expiry_date"]) in expiry_requests:
 				continue
@@ -48,7 +50,20 @@ def process_expiries() -> None:
 				"sandbox_reference": reference, "sandbox_id": request["sandbox_id"],
 				"requested_by": "system", "requested_by_user_id": None,
 				"source": "expiry", "expiry_date": request["expiry_date"],
-				"reason": "Sandbox expired; administrator approval is required before deletion.",
+				"cleanup_not_before": cleanup_not_before.isoformat(),
+				"reason": "Expiry grace period ended; administrator approval is required before deletion.",
 			})
-			update_request(request["request_id"], {}, history_entry("Decommission requested", "Expiry reached; awaiting administrator approval."))
-			notification_service.publish(request, f"expired-admin:{reference}:{request['expiry_date']}", f"{reference}: expired; decommission approval required.", "Lifecycle", admins=True)
+			update_request(
+				request["request_id"], {},
+				history_entry(
+					"Decommission requested",
+					f"Expiry grace period ended on {cleanup_not_before.isoformat()}; awaiting administrator approval.",
+				),
+			)
+			notification_service.publish(
+				request,
+				f"expired-admin:{reference}:{request['expiry_date']}",
+				f"{reference}: expiry grace period ended; decommission approval required.",
+				"Lifecycle",
+				admins=True,
+			)

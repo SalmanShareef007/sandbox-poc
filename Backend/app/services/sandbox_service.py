@@ -6,6 +6,7 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from app.core.config import settings
+from app.db.database import transaction
 from app.services.subscription_service import selection, subscription_id
 from app.core.security import user_email
 from app.repositories.extension_repository import (
@@ -169,6 +170,7 @@ def display_status(request: dict[str, Any]) -> str:
 def to_view(
     request: dict[str, Any],
     decommission: dict[str, Any] | None = None,
+    pending_extension: bool = False,
 ) -> dict[str, Any]:
     status = display_status(request)
     sandbox_id = request["sandbox_id"]
@@ -177,6 +179,20 @@ def to_view(
     cost = request.get("cost") or {}
     current_month = datetime.now(timezone.utc).strftime("%Y-%m")
     cost_current = cost.get("month") == current_month
+    cleanup_eligible_on = decommission.get("cleanup_not_before") if decommission else None
+    if not cleanup_eligible_on and expiry_date:
+        cleanup_eligible_on = (
+            date.fromisoformat(expiry_date) + timedelta(days=settings.EXPIRY_GRACE_DAYS)
+        ).isoformat()
+    cleanup_available = bool(
+        request.get("status") == "active"
+        and cleanup_eligible_on
+        and date.fromisoformat(cleanup_eligible_on) <= today()
+        and not request.get("operation_in_progress")
+        and not pending_extension
+        and not (decommission and decommission.get("status") == "approved")
+        and not (decommission and decommission.get("source") == "admin-consent" and not decommission.get("owner_accepted"))
+    )
 
     return {
         "id": request["reference"],
@@ -233,7 +249,10 @@ def to_view(
         "pendingExpiry": format_date(request.get("pending_expiry_date")),
         "expiryDate": expiry_date,
         "cleanupFlagged": bool(decommission and decommission.get("status") == "approved"),
-        "cleanupEligibleOn": decommission.get("cleanup_not_before") if decommission else None,
+        "cleanupEligibleOn": cleanup_eligible_on,
+        "cleanupAvailable": cleanup_available,
+        "decommissionSource": decommission.get("source") if decommission else None,
+        "decommissionOwnerAccepted": bool(decommission and decommission.get("owner_accepted")),
         "decommissionPending": bool(decommission),
         "decommissionReason": decommission.get("reason") if decommission else None,
         "decommissionRequestedBy": (
@@ -295,20 +314,51 @@ def _sorted_newest_first(requests: list[dict[str, Any]]) -> list[dict[str, Any]]
 
 def list_for_user(claims: dict) -> list[dict[str, Any]]:
     pending = _pending_decommissions()
+    pending_extensions = {
+        item["sandbox_reference"]
+        for item in ExtensionRequestRepository.get_all(statuses=("pending",))
+    }
 
     return [
-        to_view(request, pending.get(request["reference"]))
+        to_view(request, pending.get(request["reference"]), request["reference"] in pending_extensions)
         for request in SandboxRequestRepository.get_for_owner(claims.get("oid"), claims.get("tid"))
     ]
 
 
 def list_all() -> list[dict[str, Any]]:
     pending = _pending_decommissions()
+    pending_extensions = {
+        item["sandbox_reference"]
+        for item in ExtensionRequestRepository.get_all(statuses=("pending",))
+    }
 
     return [
-        to_view(request, pending.get(request["reference"]))
+        to_view(request, pending.get(request["reference"]), request["reference"] in pending_extensions)
         for request in _sorted_newest_first(SandboxRequestRepository.get_all())
     ]
+
+
+@JSONStorageService.lock()
+def delete_decommissioned(reference: str, admin_claims: dict) -> dict[str, Any]:
+    request = get_request_or_404(reference)
+    sandbox = SandboxRepository.get_by_id(request["sandbox_id"])
+    if request.get("status") != "decommissioned" or not sandbox or sandbox.get("status") != "decommissioned":
+        raise SandboxError("Only fully decommissioned sandboxes can be permanently removed.", 409)
+
+    with JSONStorageService.lock():
+        with transaction():
+            sandbox_id = SandboxRepository.purge_decommissioned(reference)
+            if sandbox_id is None:
+                raise SandboxError("Only fully decommissioned sandboxes can be permanently removed.", 409)
+            AuditService.log_action(
+                admin_claims.get("oid"),
+                "sandbox_record_deleted",
+                "sandbox",
+                reference,
+                {"sandbox_id": sandbox_id},
+            )
+
+    return {"id": reference, "deleted": True}
 
 
 def list_extensions() -> list[dict[str, Any]]:
@@ -324,7 +374,11 @@ def list_extensions() -> list[dict[str, Any]]:
 def view_by_reference(reference: str) -> dict[str, Any]:
     request = get_request_or_404(reference)
 
-    return to_view(request, _pending_decommissions().get(reference))
+    return to_view(
+        request,
+        _pending_decommissions().get(reference),
+        ExtensionRequestRepository.get_pending_for_sandbox(reference) is not None,
+    )
 
 
 # --------------------------------------------------
@@ -456,6 +510,7 @@ def request_decommission(reference: str, reason: str, claims: dict) -> dict[str,
         "requested_by": user_email(claims),
         "requested_by_user_id": claims["oid"],
         "requested_by_tenant_id": claims["tid"],
+        "source": "admin-consent" if is_admin(claims) and not is_owner(request, claims) else "user",
         "reason": reason,
     })
 
@@ -469,6 +524,33 @@ def request_decommission(reference: str, reason: str, claims: dict) -> dict[str,
         decommission["reference"], {"sandbox": reference},
     )
 
+    if decommission.get("source") == "admin-consent":
+        from app.services.notification_service import publish
+
+        publish(request, f"decommission-consent:{decommission['reference']}",
+                f"{reference}: an administrator requests your agreement to decommission. Message: {reason}")
+
+    return view_by_reference(reference)
+
+
+@JSONStorageService.lock()
+def accept_decommission(reference: str, claims: dict) -> dict[str, Any]:
+    request = get_request_or_404(reference)
+    if not is_owner(request, claims):
+        raise SandboxError("Only the sandbox owner can agree to decommission.", 403)
+    pending = DecommissionRequestRepository.get_pending_for_sandbox(reference)
+    if not pending or pending.get("source") != "admin-consent" or pending.get("owner_accepted"):
+        raise SandboxError("There is no decommission request awaiting your agreement.", 409)
+    if request["status"] != "active" or request.get("operation_in_progress"):
+        raise SandboxError("The sandbox is busy or not active.", 409)
+    DecommissionRequestRepository.update(pending["request_id"], {"owner_accepted": True})
+    update_request(request["request_id"], {}, history_entry("Decommission requested", "Owner agreed; awaiting administrator approval."))
+    AuditService.log_action(claims["oid"], "decommission_agreed", "decommission_request",
+                            pending["reference"], {"sandbox": reference})
+    from app.services.notification_service import publish
+
+    publish(request, f"decommission-agreed:{pending['reference']}",
+            f"{reference}: the owner agreed to decommission; administrator approval is required.", admins=True)
     return view_by_reference(reference)
 
 

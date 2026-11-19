@@ -49,7 +49,7 @@ variable "sandboxes" {
       contains(["Reader", "Contributor", "Owner", "Sandbox Contributor"], sandbox.role)
     ])
 
-    error_message = "Sandbox role is not supported. New requests use Sandbox Contributor; other roles are legacy inventory only."
+    error_message = "Sandbox role is not supported."
   }
 
   validation {

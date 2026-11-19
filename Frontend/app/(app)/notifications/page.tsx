@@ -1,11 +1,13 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { Bell } from "lucide-react";
 import Skeleton from "@/components/ui/Skeleton";
 import EmptyState from "@/components/ui/EmptyState";
 import { useSandboxes } from "@/components/providers/SandboxProvider";
 import type { Notification } from "@/lib/types";
+import { useRole } from "@/hooks/useRole";
 
 type Tab = "All" | Notification["category"];
 const tabs: Tab[] = ["All", "Budget", "Approval", "Lifecycle"];
@@ -17,8 +19,16 @@ const badgeStyles: Record<Notification["category"], string> = {
 };
 
 export default function NotificationsPage() {
-  const { notifications, isLoading } = useSandboxes();
+  const { notifications, isLoading, markNotificationsRead } = useSandboxes();
+  const { isAdmin } = useRole();
   const [tab, setTab] = useState<Tab>("All");
+  const readOnOpen = useRef(false);
+
+  useEffect(() => {
+    if (isLoading || readOnOpen.current) return;
+    readOnOpen.current = true;
+    void markNotificationsRead();
+  }, [isLoading, markNotificationsRead]);
 
   const countFor = (t: Tab) =>
     t === "All" ? notifications.length : notifications.filter((n) => n.category === t).length;
@@ -70,15 +80,20 @@ export default function NotificationsPage() {
       ) : (
         <ul className="divide-y divide-border">
           {rows.map((n) => (
-            <li key={n.id} className="flex flex-wrap items-start gap-4 px-6 py-5 transition hover:bg-surface-2/50">
+            <li key={n.id} className={`flex flex-wrap items-start gap-4 px-6 py-5 transition hover:bg-surface-2/50 ${n.read ? "" : "bg-accent/5"}`}>
               <span
                 className={`mt-0.5 h-fit shrink-0 rounded-full border px-2.5 py-0.5 text-xs font-medium ${badgeStyles[n.category]}`}
               >
                 {n.category}
               </span>
               <div className="min-w-0 flex-1">
-                <p className="text-sm font-medium text-foreground">{n.title}</p>
+                <p className={`text-sm text-foreground ${n.read ? "font-medium" : "font-semibold"}`}>{n.title}</p>
                 <p className="mt-1 text-xs text-muted" title={n.to}>To: {n.to}</p>
+                {n.sandboxId && (
+                  <Link href={`${isAdmin ? "/admin" : ""}/sandboxes/${encodeURIComponent(n.sandboxId)}`} className="mt-1 inline-block text-xs text-accent hover:underline">
+                    View sandbox
+                  </Link>
+                )}
               </div>
               <span className="shrink-0 text-xs text-muted" title="Time the notification was created">{new Date(n.when).toLocaleString()}</span>
             </li>

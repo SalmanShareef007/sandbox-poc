@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { Download, Flag, Search, SearchX } from "lucide-react";
+import Link from "next/link";
+import { Download, Flag, Search, SearchX, Trash2 } from "lucide-react";
 import { downloadCsv } from "@/lib/csv";
 import StatusBadge from "@/components/ui/StatusBadge";
 import Skeleton from "@/components/ui/Skeleton";
@@ -11,6 +12,7 @@ import { barColor, hasComparableCost, useMoney, usedPct } from "@/components/adm
 import { useSandboxes } from "@/components/providers/SandboxProvider";
 import type { Sandbox, SandboxStatus } from "@/lib/types";
 import ReasonDialog from "@/components/admin/ReasonDialog";
+import { useToast } from "@/components/providers/ToastProvider";
 
 type StatusFilter = "All" | SandboxStatus;
 type TypeFilter = "All" | Sandbox["type"];
@@ -27,18 +29,21 @@ const statuses: SandboxStatus[] = [
   "Decommissioned",
 ];
 const typeOptions: TypeFilter[] = ["All", "Subscription", "Resource Group"];
+const PAGE_SIZE = 6;
 
 const selectCls =
   "border border-border bg-background px-4 py-2.5 text-sm text-foreground focus:border-accent focus:outline-none";
 
 export default function AdminSandboxesPage() {
   const money = useMoney();
-  const { adminRequests: all, isLoading, flagCleanup } = useSandboxes();
+  const { adminRequests: all, isLoading, flagCleanup, deleteDecommissioned, configuration } = useSandboxes();
+  const { toast } = useToast();
   const [cleanup, setCleanup] = useState<Sandbox | null>(null);
   const [status, setStatus] = useState<StatusFilter>("All");
   const [unit, setUnit] = useState("All");
   const [typeFilter, setTypeFilter] = useState<TypeFilter>("All");
   const [query, setQuery] = useState("");
+  const [page, setPage] = useState(1);
 
   const units = ["All", ...Array.from(new Set(all.map((s) => s.businessUnit))).sort()];
 
@@ -63,6 +68,9 @@ export default function AdminSandboxesPage() {
         s.requestorName.toLowerCase().includes(q) ||
         s.requestorEmail.toLowerCase().includes(q))
   );
+  const pageCount = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
+  const currentPage = Math.min(page, pageCount);
+  const visibleRows = rows.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
 
   const filtersActive = status !== "All" || unit !== "All" || typeFilter !== "All" || q !== "";
   const exportCsv = () =>
@@ -74,16 +82,33 @@ export default function AdminSandboxesPage() {
         s.budget, s.spent ?? "", s.budgetCurrency ?? "", s.expiryDate ?? "", s.daysLeft ?? ""]),
     );
   const clearFilters = () => {
+    setPage(1);
     setStatus("All");
     setUnit("All");
     setTypeFilter("All");
     setQuery("");
   };
+  const removeDecommissioned = async (sandbox: Sandbox) => {
+    const confirmed = window.confirm(
+      `Permanently remove ${sandbox.name} and its portal history? This is only available after Azure cleanup has completed; it does not delete Azure resources.`
+    );
+    if (confirmed && await deleteDecommissioned(sandbox.id)) {
+      toast(`Removed ${sandbox.name} from the portal.`, "success");
+    }
+  };
 
   return (
     <section className="border border-border bg-surface shadow-card">
       <div className="border-b border-border px-6 pt-2">
-        <Tabs tabs={tabs} value={status} onChange={setStatus} label="Sandbox status" />
+        <Tabs
+          tabs={tabs}
+          value={status}
+          onChange={(value) => {
+            setPage(1);
+            setStatus(value);
+          }}
+          label="Sandbox status"
+        />
       </div>
 
       <div className="flex flex-wrap items-end gap-4 border-b border-border px-6 py-4">
@@ -91,7 +116,10 @@ export default function AdminSandboxesPage() {
           <Search size={16} className="absolute top-1/2 left-3 -translate-y-1/2 text-muted" aria-hidden="true" />
           <input
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(e) => {
+              setPage(1);
+              setQuery(e.target.value);
+            }}
             placeholder="Search name, ID or requestor..."
             aria-label="Search sandboxes"
             className="w-full border border-border bg-background py-2.5 pr-4 pl-9 text-sm text-foreground placeholder:text-muted focus:border-accent focus:outline-none"
@@ -100,7 +128,14 @@ export default function AdminSandboxesPage() {
 
         <label className="flex flex-col gap-1.5 text-xs font-medium text-muted">
           Business unit
-          <select className={selectCls} value={unit} onChange={(e) => setUnit(e.target.value)}>
+          <select
+            className={selectCls}
+            value={unit}
+            onChange={(e) => {
+              setPage(1);
+              setUnit(e.target.value);
+            }}
+          >
             {units.map((u) => (
               <option key={u} value={u}>
                 {u}
@@ -114,7 +149,10 @@ export default function AdminSandboxesPage() {
           <select
             className={selectCls}
             value={typeFilter}
-            onChange={(e) => setTypeFilter(e.target.value as TypeFilter)}
+            onChange={(e) => {
+              setPage(1);
+              setTypeFilter(e.target.value as TypeFilter);
+            }}
           >
             {typeOptions.map((t) => (
               <option key={t} value={t}>
@@ -173,13 +211,13 @@ export default function AdminSandboxesPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
-              {rows.map((s) => {
+              {visibleRows.map((s) => {
                 const pct = usedPct(s);
                 const noSpend = s.status === "Pending" || s.status === "Rejected";
                 return (
                   <tr key={s.id}>
                     <td className="px-6 py-4">
-                      <p className="font-mono text-foreground">{s.name}</p>
+                      <Link href={`/admin/sandboxes/${encodeURIComponent(s.id)}`} className="font-mono text-accent hover:underline">{s.name}</Link>
                       <p className="mt-0.5 text-xs text-muted">
                         {s.id} · {s.type}
                       </p>
@@ -236,8 +274,28 @@ export default function AdminSandboxesPage() {
                       )}
                     </td>
                     <td className="px-6 py-4">
-                      {s.cleanupFlagged ? <p className="text-xs text-muted">Flagged; eligible {s.cleanupEligibleOn}</p> : (s.status === "Active" || s.status === "Expiring" || s.status === "Expired") && !s.operationInProgress ? (
-                        <button onClick={() => setCleanup(s)} className="inline-flex items-center gap-2 text-sm text-accent"><Flag size={16} />Flag cleanup</button>
+                      {s.status === "Decommissioned" ? (
+                        <button
+                          onClick={() => void removeDecommissioned(s)}
+                          className="inline-flex items-center gap-2 text-sm text-red-600 hover:text-red-700 dark:text-red-400"
+                          title="Permanently remove this decommissioned record and its portal history"
+                        >
+                          <Trash2 size={16} />
+                          Delete record
+                        </button>
+                      ) : s.cleanupFlagged ? (
+                        <p className="text-xs text-muted">Flagged; eligible {s.cleanupEligibleOn}</p>
+                      ) : s.cleanupAvailable ? (
+                        <button onClick={() => setCleanup(s)} className="inline-flex items-center gap-2 text-sm text-accent">
+                          <Flag size={16} />
+                          Flag cleanup
+                        </button>
+                      ) : s.status === "Expired" && s.cleanupEligibleOn ? (
+                        <p className="text-xs text-muted">
+                          {s.cleanupEligibleOn > new Date().toISOString().slice(0, 10)
+                            ? `Available after ${s.cleanupEligibleOn}`
+                            : "Resolve pending operations before cleanup"}
+                        </p>
                       ) : null}
                     </td>
                   </tr>
@@ -247,12 +305,38 @@ export default function AdminSandboxesPage() {
           </table>
         </div>
       )}
+      {!isLoading && rows.length > 0 && (
+        <div className="flex items-center justify-between border-t border-border px-6 py-4">
+          <p className="text-sm text-muted">
+            Showing {(currentPage - 1) * PAGE_SIZE + 1}-{Math.min(currentPage * PAGE_SIZE, rows.length)} of {rows.length}
+          </p>
+          <nav className="flex items-center gap-2" aria-label="Sandbox pagination">
+            <button
+              type="button"
+              onClick={() => setPage(currentPage - 1)}
+              disabled={currentPage === 1}
+              className="border border-border px-3 py-2 text-sm text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Previous
+            </button>
+            <span className="px-2 text-sm text-muted">Page {currentPage} of {pageCount}</span>
+            <button
+              type="button"
+              onClick={() => setPage(currentPage + 1)}
+              disabled={currentPage === pageCount}
+              className="border border-border px-3 py-2 text-sm text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Next
+            </button>
+          </nav>
+        </div>
+      )}
       <ReasonDialog
         open={cleanup !== null}
         onClose={() => setCleanup(null)}
         title="Flag sandbox for cleanup"
         confirmLabel="Flag cleanup"
-        intro={cleanup && <>Flag <span className="font-mono">{cleanup.name}</span> for resource deletion. Expired sandboxes wait for their grace period; other approved cleanup can start immediately.</>}
+        intro={cleanup && <>Flag <span className="font-mono">{cleanup.name}</span> for resource deletion after its expiry date and {configuration?.expiryGraceDays ?? 7} days of grace. Pending extensions must be resolved first.</>}
         onConfirm={async (reason) => { if (cleanup && await flagCleanup(cleanup.id, reason)) setCleanup(null); }}
       />
     </section>

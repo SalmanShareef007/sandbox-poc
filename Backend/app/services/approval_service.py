@@ -1,5 +1,5 @@
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from uuid import uuid4
 
 from app.core.config import settings
@@ -278,8 +278,11 @@ class ApprovalService:
 
             request = get_request_or_404(sandbox_reference)
             cls._prevent_self_approval(request, admin_claims)
-            if decommission.get("requested_by_user_id") == admin_claims.get("oid"):
+            requires_owner_consent = decommission.get("source") == "admin-consent"
+            if not requires_owner_consent and decommission.get("requested_by_user_id") == admin_claims.get("oid"):
                 raise SandboxError("You cannot approve a decommission request you submitted.", 403)
+            if requires_owner_consent and not decommission.get("owner_accepted"):
+                raise SandboxError("The sandbox owner must agree before decommission can be approved.", 409)
 
             if request["status"] != "active" or request.get("operation_in_progress"):
                 raise SandboxError("The sandbox is busy or not active.", 409)
@@ -287,7 +290,15 @@ class ApprovalService:
                 raise SandboxError("Decide the pending extension before approving decommission.", 409)
 
             expiry = datetime.fromisoformat(request["expiry_date"]).date()
-            eligible = expiry + timedelta(days=settings.EXPIRY_GRACE_DAYS) if expiry < today() else today()
+            if decommission.get("source") == "expiry":
+                eligible = expiry + timedelta(days=settings.EXPIRY_GRACE_DAYS)
+            else:
+                eligible = expiry + timedelta(days=settings.EXPIRY_GRACE_DAYS) if expiry < today() else today()
+            if decommission.get("source") == "expiry" and today() < eligible:
+                raise SandboxError(
+                    f"Expiry cleanup cannot be approved before the grace period ends on {eligible.isoformat()}.",
+                    409,
+                )
             DecommissionRequestRepository.update(decommission["request_id"], {
                 "status": "approved", "decision_by": admin, "cleanup_not_before": eligible.isoformat(),
                 "flagged_expiry": request["expiry_date"],
@@ -306,6 +317,18 @@ class ApprovalService:
     def flag_cleanup(cls, reference: str, reason: str, admin_claims: dict) -> dict:
         request = get_request_or_404(reference)
         cls._prevent_self_approval(request, admin_claims)
+        if request["status"] != "active" or request.get("operation_in_progress"):
+            raise SandboxError("Only idle, active sandboxes can be flagged for cleanup.", 409)
+        if not request.get("expiry_date"):
+            raise SandboxError("Cleanup can only be flagged after the sandbox expiry grace period.", 409)
+        eligible = date.fromisoformat(request["expiry_date"]) + timedelta(days=settings.EXPIRY_GRACE_DAYS)
+        if today() < eligible:
+            raise SandboxError(
+                f"Cleanup can only be flagged after the expiry grace period ends on {eligible.isoformat()}.",
+                409,
+            )
+        if ExtensionRequestRepository.get_pending_for_sandbox(reference):
+            raise SandboxError("Decide the pending extension before flagging cleanup.", 409)
         open_requests = [item for item in DecommissionRequestRepository.get_all(statuses=("pending", "approved")) if item.get("sandbox_reference") == reference]
         if any(item["status"] == "approved" for item in open_requests):
             raise SandboxError("Cleanup is already flagged for this sandbox.", 409)

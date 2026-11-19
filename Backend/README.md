@@ -109,12 +109,18 @@ not as an automatic startup action.
 6. Confirm the configured remote-state resource group, account, container and key
 	point to the existing state. The partial backend configuration does not copy or
 	migrate state automatically. Never point a fresh inventory at unrelated state.
-7. Review legacy `Owner` or built-in `Contributor` assignments. New requests use
-	the restricted Sandbox Contributor role, but imported broad permissions are
-	not silently revoked. Remove broader inherited/direct grants through your
-	approved access-change process; custom-role `not_actions` are not deny assignments.
+7. Review legacy role assignments. New requests can use the enabled built-in
+	`Contributor` or `Owner` roles. Owner can grant access within the resource group;
+	existing assignments are not silently changed.
 8. Test a non-production request, extension, retry and deletion before reopening
 	production. Preserve the old JSON backup until reconciliation is complete.
+
+The sandbox detail page queries Azure resource inventory and month-to-date costs
+using the backend's Azure identity. That identity needs resource read and Cost
+Management read/query permissions at the sandbox resource-group scope. Cost data
+can be delayed; resources without reported costs are not treated as zero.
+Resource and cost results are cached for five minutes per backend process. Azure
+rate limits are reported with a retry time rather than as permission failures.
 
 ## Azure App Service Deployment
 
@@ -154,7 +160,7 @@ Set these shared API/worker settings in Azure, not in deployed `.env` files:
 | `ENTRA_REQUIRED_SCOPE` | `access_as_user`, or the actual exposed delegated scope name |
 | `ENTRA_ALLOWED_CLIENT_IDS` | JSON array of trusted frontend application GUIDs |
 | `ADMIN_ROLE` | `Sandboxadmin`, defined and assigned on the API registration |
-| `ALLOWED_SANDBOX_ROLES` | `["Sandbox Contributor"]` |
+| `ALLOWED_SANDBOX_ROLES` | `["Owner", "Contributor"]` |
 | `CORS_ORIGINS` | JSON array of exact frontend HTTPS origins, with no trailing slash |
 | `AZURE_SUBSCRIPTION_ID` | Dedicated sandbox subscription GUID |
 | `BUDGET_CURRENCY` | Subscription billing currency; the current UI defaults to INR |
@@ -210,6 +216,10 @@ Dockerfile with all five build arguments from Frontend's `.env.example`. The ima
 uses Linux-built Next.js standalone output; do not deploy Windows-built symlinks.
 
 ## Lifecycle And Cost Semantics
+
+- For admin-initiated decommission requests, the sandbox owner must explicitly
+  agree before an administrator can approve cleanup. The initiating administrator
+  may give final approval, but administrators cannot approve cleanup of their own sandbox.
 
 - Expiry reminders and in-app notifications are durable and deduplicated. After
 	expiry, a decommission request waits for an independent administrator's cleanup flag

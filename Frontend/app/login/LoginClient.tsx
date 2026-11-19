@@ -91,7 +91,7 @@ export default function LoginClient() {
             <span className="h-2.5 w-2.5 rounded-full bg-brand-lime" />
             <span className="h-2.5 w-2.5 rounded-full bg-brand-magenta" />
           </div>
-          <p className="text-xs text-[#a3a3a3]">Azure Sandbox Platform · Phase 1</p>
+          <p className="text-xs text-[#a3a3a3]">Azure Sandbox Platform</p>
         </div>
       </section>
 

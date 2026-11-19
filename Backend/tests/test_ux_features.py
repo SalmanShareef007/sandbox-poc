@@ -122,3 +122,22 @@ def test_admin_notification_posts_to_webhook_once(database, monkeypatch):
     notification_service.publish(request, "k1", f"{request['reference']}: awaiting approval", admins=True)
     notification_service.publish(request, "k2", "owner notice")
     assert len(calls) == 1
+
+
+def test_notifications_are_marked_read_for_the_current_user(client):
+    from app.repositories.request_repository import SandboxRequestRepository
+    from app.services.notification_service import publish
+
+    request = SandboxRequestRepository.create({
+        "sandbox_id": "eng-owner-001",
+        "user_id": OWNER["oid"],
+        "tenant_id": OWNER["tid"],
+        "owner": OWNER["preferred_username"],
+    })
+    publish(request, "read-test", "Test notice")
+
+    notices = client.get("/api/v1/notifications").json()
+    assert len(notices) == 1
+    assert notices[0]["read"] is False
+    assert client.post("/api/v1/notifications/read").json() == {"updated": 1}
+    assert client.get("/api/v1/notifications").json()[0]["read"] is True

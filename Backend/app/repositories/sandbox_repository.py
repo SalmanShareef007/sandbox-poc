@@ -2,11 +2,22 @@ import logging
 import uuid
 from typing import Any
 
-from sqlalchemy import insert, select, update
+from sqlalchemy import delete, insert, or_, select, update
 
 from app.db.database import connection, transaction
 from app.db.errors import guarded
-from app.db.tables import sandbox_history, sandbox_requests as r, sandboxes as t
+from app.db.tables import (
+    approvals,
+    decommission_requests,
+    extension_requests,
+    notifications,
+    request_history,
+    sandbox_history,
+    sandbox_requests as r,
+    sandboxes as t,
+    terraform_jobs,
+    terraform_logs,
+)
 from app.repositories._sql import from_money, iso, merge_extra, split_updates, to_date, to_money, utcnow
 
 logger = logging.getLogger(__name__)
@@ -124,3 +135,35 @@ class SandboxRepository:
     def delete(cls, sandbox_id: str) -> bool:
         """Decommissioned sandboxes stay in the database for audit; this marks them rather than removing the row."""
         return cls.update(sandbox_id, {"status": "decommissioned"}) is not None
+
+    @classmethod
+    @guarded("sandbox.purge_decommissioned")
+    def purge_decommissioned(cls, reference: str) -> str | None:
+        with transaction() as conn:
+            row = conn.execute(
+                select(r.c.id, t.c.id.label("sandbox_pk"), t.c.sandbox_id)
+                .select_from(t.join(r, r.c.id == t.c.request_id))
+                .where(r.c.reference == reference, r.c.status == "decommissioned", t.c.status == "decommissioned")
+                .with_for_update()
+            ).first()
+            if row is None:
+                return None
+
+            extension_ids = select(extension_requests.c.id).where(extension_requests.c.sandbox_id == row.sandbox_pk)
+            decommission_ids = select(decommission_requests.c.id).where(decommission_requests.c.sandbox_id == row.sandbox_pk)
+            job_ids = select(terraform_jobs.c.id).where(terraform_jobs.c.sandbox_id == row.sandbox_pk)
+            conn.execute(delete(approvals).where(or_(
+                approvals.c.sandbox_request_id == row.id,
+                approvals.c.extension_request_id.in_(extension_ids),
+                approvals.c.decommission_request_id.in_(decommission_ids),
+            )))
+            conn.execute(delete(terraform_logs).where(terraform_logs.c.job_id.in_(job_ids)))
+            conn.execute(delete(terraform_jobs).where(terraform_jobs.c.sandbox_id == row.sandbox_pk))
+            conn.execute(delete(extension_requests).where(extension_requests.c.sandbox_id == row.sandbox_pk))
+            conn.execute(delete(decommission_requests).where(decommission_requests.c.sandbox_id == row.sandbox_pk))
+            conn.execute(delete(request_history).where(request_history.c.request_id == row.id))
+            conn.execute(delete(sandbox_history).where(sandbox_history.c.sandbox_id == row.sandbox_pk))
+            conn.execute(delete(notifications).where(notifications.c.request_id == row.id))
+            conn.execute(delete(t).where(t.c.id == row.sandbox_pk))
+            conn.execute(delete(r).where(r.c.id == row.id))
+            return row.sandbox_id

@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -87,6 +88,29 @@ def activate(reference):
 	return SandboxRequestRepository.get_by_reference(reference)
 
 
+def test_admin_can_approve_own_decommission_request_after_owner_agrees(request_record):
+	from app.services import notification_service
+
+	active = activate(request_record)
+	expired = (sandbox_service.today() - timedelta(days=8)).isoformat()
+	SandboxRequestRepository.update(active["request_id"], {"expiry_date": expired})
+	SandboxRepository.update(active["sandbox_id"], {"expiry_date": expired})
+	other_admin = {**ADMIN, "oid": OTHER_OID, "preferred_username": "other-admin@example.com"}
+	sandbox_service.request_decommission(request_record, "Please confirm cleanup", ADMIN)
+	assert any("Please confirm cleanup" in notice["title"] for notice in notification_service.list_for_user(OWNER))
+	with pytest.raises(sandbox_service.SandboxError) as error:
+		ApprovalService.approve_decommission(request_record, ADMIN)
+	assert error.value.status_code == 409
+	with pytest.raises(sandbox_service.SandboxError, match="owner must agree"):
+		ApprovalService.flag_cleanup(request_record, "Bypass attempt", other_admin)
+	with pytest.raises(sandbox_service.SandboxError):
+		sandbox_service.accept_decommission(request_record, other_admin)
+	sandbox_service.accept_decommission(request_record, OWNER)
+	assert any("owner agreed" in notice["title"] for notice in notification_service.list_for_user(other_admin))
+	ApprovalService.approve_decommission(request_record, ADMIN)
+	assert SandboxRequestRepository.get_by_reference(request_record)["status"] == "decommissioning"
+
+
 def test_enqueue_failure_rolls_back_approval(request_record, monkeypatch):
 	def fail(*args):
 		raise RuntimeError("queue unavailable")
@@ -161,14 +185,6 @@ def test_own_decommission_cannot_be_approved(request_record):
 	assert error.value.status_code == 403
 
 
-def test_decommission_submitter_cannot_approve(request_record):
-	activate(request_record)
-	sandbox_service.request_decommission(request_record, "Testing complete", ADMIN)
-	with pytest.raises(sandbox_service.SandboxError) as error:
-		ApprovalService.approve_decommission(request_record, ADMIN)
-	assert error.value.status_code == 403
-
-
 def test_extension_request_is_deduplicated_under_concurrency(request_record):
 	activate(request_record)
 	def submit():
@@ -231,8 +247,12 @@ def test_approved_extension_cancels_cleanup_flag(request_record):
 	from app.repositories.extension_repository import DecommissionRequestRepository
 
 	request = activate(request_record)
-	SandboxRequestRepository.update(request["request_id"], {"expiry_date": (sandbox_service.today() - timedelta(days=1)).isoformat()})
-	ApprovalService.flag_cleanup(request_record, "Cleanup after grace period", ADMIN)
+	SandboxRequestRepository.update(
+		request["request_id"],
+		{"expiry_date": (sandbox_service.today() - timedelta(days=1)).isoformat()},
+	)
+	sandbox_service.request_decommission(request_record, "Cleanup after grace period", OWNER)
+	ApprovalService.approve_decommission(request_record, ADMIN)
 	extension = sandbox_service.request_extension(request_record, SimpleNamespace(extra_days=30, reason="Continue testing the workload"), OWNER)
 	ApprovalService.approve_extension(extension["id"], ADMIN)
 	assert DecommissionRequestRepository.get_all()[0]["status"] == "cancelled"

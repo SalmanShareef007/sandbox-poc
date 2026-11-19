@@ -23,7 +23,11 @@ const DECIDED: SandboxStatus[] = ["Active", "Expiring", "Expired", "Rejected", "
 
 const matchers: Record<TabKey, (s: Sandbox) => boolean> = {
   pending: (s) => s.status === "Pending",
-  decommission: (s) => !!s.decommissionPending && !s.cleanupFlagged,
+  decommission: (s) =>
+    !!s.decommissionPending &&
+    !s.cleanupFlagged &&
+    (s.decommissionSource !== "admin-consent" || !!s.decommissionOwnerAccepted) &&
+    (s.decommissionSource !== "expiry" || !!s.cleanupAvailable),
   provisioning: (s) =>
     s.status === "Provisioning" || s.status === "Decommissioning" || !!s.operationInProgress,
   failed: (s) => s.status === "Failed" || !!s.failedOperation,
@@ -403,6 +407,7 @@ function CardFooter({
   onApproveDecommission: () => void;
   onRejectDecommission: () => void;
 }) {
+  const awaitingOwner = s.decommissionSource === "admin-consent" && !s.decommissionOwnerAccepted;
   const footerCls =
     "flex flex-wrap items-center justify-between gap-3 border-t border-border px-5 py-4";
 
@@ -445,7 +450,7 @@ function CardFooter({
   if (s.decommissionPending) {
     return (
       <div className={footerCls}>
-        <p className="text-sm text-muted">{s.cleanupFlagged ? `Cleanup flagged; eligible from ${s.cleanupEligibleOn}.` : "Flags the resource group and its resources for cleanup after any expiry grace period."}</p>
+        <p className="text-sm text-muted">{s.cleanupFlagged ? `Cleanup flagged; eligible from ${s.cleanupEligibleOn}.` : awaitingOwner ? "Awaiting the owner's agreement." : s.decommissionSource === "admin-consent" ? "The owner agreed. Cleanup is ready for administrator approval." : "Flags the resource group and its resources for cleanup after any expiry grace period."}</p>
         <div className="flex gap-3">
           <button onClick={onRejectDecommission} className={`${btnSecondary} inline-flex items-center gap-2`}>
             <X size={16} aria-hidden="true" />
@@ -453,8 +458,8 @@ function CardFooter({
           </button>
           <button
             onClick={onApproveDecommission}
-            disabled={isOwn || s.cleanupFlagged}
-            className="inline-flex items-center gap-2 bg-red-600 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-red-700"
+            disabled={isOwn || s.cleanupFlagged || awaitingOwner}
+            className="inline-flex items-center gap-2 bg-red-600 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
           >
             <Power size={16} aria-hidden="true" />
             {s.cleanupFlagged ? "Cleanup flagged" : "Approve cleanup"}

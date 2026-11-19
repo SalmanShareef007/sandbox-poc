@@ -95,7 +95,7 @@ def configuration() -> dict:
         "businessUnits": list_units(), "costCenterMode": settings.COST_CENTER_MODE,
         "sharedCostCenters": settings.SHARED_COST_CENTERS,
         "regions": settings.ALLOWED_REGIONS,
-        "roles": [role for role in settings.ALLOWED_SANDBOX_ROLES if role != "Owner" or settings.ALLOW_OWNER_ROLE_REQUESTS],
+        "roles": [role for role in settings.ALLOWED_SANDBOX_ROLES if role in ("Contributor", "Owner") and (role != "Owner" or settings.ALLOW_OWNER_ROLE_REQUESTS)],
         "durations": settings.ALLOWED_DURATIONS_DAYS, "extensionDays": settings.ALLOWED_EXTENSION_DAYS,
         "maxExtensionDays": settings.MAX_EXTENSION_DAYS,
         "expiryGraceDays": settings.EXPIRY_GRACE_DAYS, "expiryReminderDays": settings.EXPIRING_THRESHOLD_DAYS,

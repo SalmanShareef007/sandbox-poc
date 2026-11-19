@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import {
@@ -23,6 +23,8 @@ import { useSandboxes } from "@/components/providers/SandboxProvider";
 import { useToast } from "@/components/providers/ToastProvider";
 import type { HistoryEntry, HistoryStatus, Sandbox } from "@/lib/types";
 import { hasComparableCost, useMoney, usedPct } from "@/components/admin/format";
+import { useAuth } from "@/hooks/useAuth";
+import { apiFetch } from "@/lib/api";
 
 
 function barColor(pct: number) {
@@ -92,6 +94,48 @@ function Card({ title, children }: { title: string; children: React.ReactNode })
       </div>
       <div className="p-6">{children}</div>
     </section>
+  );
+}
+
+interface ResourceCost {
+  id: string;
+  name: string;
+  type: string;
+  cost: number | null;
+  currency: string | null;
+}
+
+function ResourceCosts({ reference }: { reference: string }) {
+  const { getApiToken } = useAuth();
+  const tokenRef = useRef(getApiToken);
+  const getToken = useCallback(() => tokenRef.current(), []);
+  const money = useMoney();
+  const [resources, setResources] = useState<ResourceCost[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => { tokenRef.current = getApiToken; });
+  useEffect(() => {
+    let active = true;
+    apiFetch<ResourceCost[]>(getToken, `/sandboxes/${encodeURIComponent(reference)}/resources`)
+      .then((result) => { if (active) setResources(result); })
+      .catch((err: unknown) => { if (active) setError(err instanceof Error ? err.message : "Could not load resource costs."); });
+    return () => { active = false; };
+  }, [getToken, reference]);
+
+  return (
+    <Card title="Deployed resources · current month cost">
+      {error ? <p role="alert" className="text-sm text-red-600">{error}</p> :
+        resources === null ? <p className="text-sm text-muted">Loading Azure resources and costs...</p> :
+        resources.length === 0 ? <p className="text-sm text-muted">No deployed resources found.</p> :
+        <ul className="divide-y divide-border">
+          {resources.map((resource) => (
+            <li key={resource.id} className="flex flex-wrap justify-between gap-3 py-3 text-sm">
+              <span><span className="font-medium">{resource.name}</span><br /><span className="text-xs text-muted">{resource.type}</span></span>
+              <span>{resource.cost === null ? "No cost reported" : money(resource.cost, 2, resource.currency ?? undefined)}</span>
+            </li>
+          ))}
+        </ul>}
+      <p className="mt-3 text-xs text-muted">Azure cost data can be delayed. Resources without reported cost are not shown as zero.</p>
+    </Card>
   );
 }
 
@@ -175,6 +219,7 @@ function DecommissionForm({ sandbox, onClose }: { sandbox: Sandbox; onClose: () 
 
 function ActionsCard({ sandbox: s }: { sandbox: Sandbox }) {
   const { toast } = useToast();
+  const { agreeDecommission } = useSandboxes();
   const [decommissioning, setDecommissioning] = useState(false);
   const idLabel = s.type === "Subscription" ? "subscription" : "resource group";
 
@@ -191,6 +236,21 @@ function ActionsCard({ sandbox: s }: { sandbox: Sandbox }) {
   return (
     <Card title="Actions">
       <div className="space-y-3">
+        {s.decommissionSource === "admin-consent" && !s.decommissionOwnerAccepted && (
+          <div className="space-y-3 border border-amber-500/30 p-4 text-sm">
+            <p>An administrator requests your agreement to decommission this sandbox.</p>
+            <p className="break-words">{s.decommissionReason}</p>
+            <button
+              className={actionCls}
+              onClick={async () => {
+                if (!window.confirm("Agree to decommission this sandbox and all its resources? An administrator must still approve.")) return;
+                if (await agreeDecommission(s.id)) toast("Agreement sent to administrators.", "success");
+              }}
+            >
+              Agree to decommission
+            </button>
+          </div>
+        )}
         {s.resourceId && (
           <p className="truncate font-mono text-xs text-muted" title={s.resourceId}>
             {s.resourceId}
@@ -414,6 +474,8 @@ function SandboxDetail({
               </>
             )}
           </Card>
+
+          {showActions && s.resourceId && <ResourceCosts reference={s.id} />}
 
           {hasComparableCost(s) && s.spendHistory && s.spendHistory.length > 0 && (
             <Card title="Spend over time">

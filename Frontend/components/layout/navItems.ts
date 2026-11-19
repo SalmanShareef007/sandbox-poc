@@ -43,6 +43,7 @@ export const activityNav: NavItemDef[] = [
 
 export const adminNav: NavItemDef[] = [
   { href: "/admin", label: "Overview", icon: LayoutDashboard, exact: true },
+  { href: "/notifications", label: "Notifications", icon: Bell },
   { href: "/admin/approvals", label: "Approvals", icon: ClipboardCheck },
   { href: "/admin/extensions", label: "Extensions", icon: CalendarClock },
   { href: "/admin/sandboxes", label: "All sandboxes", icon: Boxes },

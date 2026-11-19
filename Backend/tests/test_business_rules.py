@@ -100,8 +100,8 @@ def test_cleanup_flag_waits_for_grace_and_extension_blocks_it(database, monkeypa
     from datetime import timedelta
     from app.repositories.request_repository import SandboxRequestRepository
     from app.repositories.sandbox_repository import SandboxRepository
-    from app.repositories.extension_repository import ExtensionRequestRepository
-    from app.services import expiry_service, sandbox_service
+    from app.repositories.extension_repository import DecommissionRequestRepository, ExtensionRequestRepository
+    from app.services import approval_service, expiry_service, sandbox_service
     from app.services.approval_service import ApprovalService
     from app.services.job_service import list_jobs
 
@@ -115,18 +115,74 @@ def test_cleanup_flag_waits_for_grace_and_extension_blocks_it(database, monkeypa
     })
     SandboxRepository.create({"sandbox_id": "eng-owner-001", "request_reference": request["reference"], "status": "active", "expiry_date": expiry})
     admin = {"oid": "0b6bd7f4-1d1f-4a4e-8d8e-5f0f0b0d2001", "tid": tenant, "preferred_username": "admin@example.com"}
-    view = ApprovalService.flag_cleanup(request["reference"], "Expired resources ready for cleanup", admin)
-    assert view["cleanupFlagged"]
-    assert list_jobs() == []
+    assert sandbox_service.view_by_reference(request["reference"])["cleanupAvailable"] is False
     ExtensionRequestRepository.create({
         "sandbox_reference": request["reference"], "extra_days": 30,
         "requested_expiry_date": (sandbox_service.today() + timedelta(days=29)).isoformat(), "reason": "More time",
     })
-    original_today = sandbox_service.today()
-    monkeypatch.setattr(expiry_service, "today", lambda: original_today + timedelta(days=10))
+    with pytest.raises(SandboxError, match="grace period"):
+        ApprovalService.flag_cleanup(request["reference"], "Expired resources ready for cleanup", admin)
+
+    eligible_on = (sandbox_service.today() - timedelta(days=1)) + timedelta(days=7)
+    monkeypatch.setattr(settings, "EXPIRY_GRACE_DAYS", 7)
+    monkeypatch.setattr(sandbox_service, "today", lambda: eligible_on)
+    monkeypatch.setattr(expiry_service, "today", lambda: eligible_on)
+    monkeypatch.setattr(approval_service, "today", lambda: eligible_on)
     expiry_service.process_expiries()
     assert list_jobs() == []
+    assert sandbox_service.view_by_reference(request["reference"])["cleanupAvailable"] is False
     extension = ExtensionRequestRepository.get_all()[0]
     ExtensionRequestRepository.update(extension["request_id"], {"status": "rejected"})
     expiry_service.process_expiries()
+    pending = DecommissionRequestRepository.get_all(statuses=("pending",))
+    assert len(pending) == 1
+    assert sandbox_service.view_by_reference(request["reference"])["cleanupAvailable"] is True
+    from app.services.notification_service import list_for_user
+
+    notices = list_for_user({"oid": request["user_id"], "tid": request["tenant_id"]})
+    assert any("grace period ended" in notice["title"].lower() for notice in notices)
+    view = ApprovalService.flag_cleanup(request["reference"], "Expired resources ready for cleanup", admin)
+    assert view["cleanupFlagged"]
     assert list_jobs()[0]["operation"] == "decommission"
+
+
+def test_expiry_decommission_approval_cannot_bypass_grace_period(database, monkeypatch):
+    from datetime import timedelta
+
+    from app.repositories.extension_repository import DecommissionRequestRepository
+    from app.repositories.request_repository import SandboxRequestRepository
+    from app.repositories.sandbox_repository import SandboxRepository
+    from app.services import sandbox_service
+    from app.services.approval_service import ApprovalService
+
+    monkeypatch.setattr(settings, "EXPIRY_GRACE_DAYS", 7)
+    tenant = "0b6bd7f4-1d1f-4a4e-8d8e-5f0f0b0d0001"
+    expiry = (sandbox_service.today() - timedelta(days=1)).isoformat()
+    request = SandboxRequestRepository.create({
+        "sandbox_id": "eng-owner-002",
+        "user_id": "0b6bd7f4-1d1f-4a4e-8d8e-5f0f0b0d1001",
+        "tenant_id": tenant,
+        "owner": "owner@example.com",
+        "status": "active",
+        "expiry_date": expiry,
+    })
+    SandboxRepository.create({
+        "sandbox_id": request["sandbox_id"],
+        "request_reference": request["reference"],
+        "status": "active",
+        "expiry_date": expiry,
+    })
+    DecommissionRequestRepository.create({
+        "sandbox_reference": request["reference"],
+        "sandbox_id": request["sandbox_id"],
+        "source": "expiry",
+        "expiry_date": expiry,
+    })
+    admin = {
+        "oid": "0b6bd7f4-1d1f-4a4e-8d8e-5f0f0b0d2001",
+        "tid": tenant,
+        "preferred_username": "admin@example.com",
+    }
+
+    with pytest.raises(SandboxError, match="grace period"):
+        ApprovalService.approve_decommission(request["reference"], admin)

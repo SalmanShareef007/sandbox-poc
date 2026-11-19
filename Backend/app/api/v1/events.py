@@ -29,7 +29,7 @@ def _version() -> str:
             conn.execute(select(func.max(sandboxes.c.updated_at))).scalar(),
             conn.execute(select(func.max(extension_requests.c.updated_at))).scalar(),
             conn.execute(select(func.max(decommission_requests.c.updated_at))).scalar(),
-            conn.execute(select(func.max(notifications.c.created_at))).scalar(),
+            conn.execute(select(func.max(notifications.c.updated_at))).scalar(),
             conn.execute(select(func.max(request_history.c.id))).scalar(),
         ]
     return "|".join(str(part) for part in parts)

@@ -265,6 +265,8 @@ notifications = Table(
     Column("cc_recipients", Json, nullable=False, server_default="[]"),
     Column("owner_object_id", String(64)),
     Column("owner_tenant_id", String(64)),
+    Column("owner_read_at", Timestamp),
+    Column("admin_read_at", Timestamp),
     Column("email_status", String(20), nullable=False, server_default="disabled"),
     Column("attempts", Integer, nullable=False, server_default="0"),
     Column("email_error", Text),
@@ -272,6 +274,14 @@ notifications = Table(
     Index("idx_notifications_created", "created_at"),
     Index("idx_notifications_owner", "owner_object_id", "owner_tenant_id"),
     Index("idx_notifications_pending", "email_status", "attempts"),
+)
+
+notification_admin_reads = Table(
+    "notification_admin_reads", metadata,
+    Column("notification_id", String(64), ForeignKey("notifications.id", ondelete="CASCADE"), primary_key=True),
+    Column("admin_object_id", String(64), primary_key=True),
+    Column("admin_tenant_id", String(64), primary_key=True),
+    Column("read_at", Timestamp, nullable=False, server_default=func.now()),
 )
 
 reference_counters = Table(

@@ -44,6 +44,7 @@ interface SandboxContextValue {
   addRequest: (req: NewRequest) => Promise<Sandbox | null>;
   requestExtension: (id: string, days: number | null, reason: string, expiryDate?: string) => Promise<boolean>;
   decommissionRequested: (id: string, reason: string) => Promise<boolean>;
+  agreeDecommission: (id: string) => Promise<boolean>;
   approveRequest: (id: string, budgetOverride?: number) => Promise<boolean>;
   rejectRequest: (id: string, reason: string) => Promise<boolean>;
   retryProvisioning: (id: string) => Promise<boolean>;
@@ -52,6 +53,8 @@ interface SandboxContextValue {
   rejectExtension: (id: string, reason: string) => Promise<boolean>;
   approveDecommission: (id: string) => Promise<boolean>;
   rejectDecommission: (id: string, reason: string) => Promise<boolean>;
+  markNotificationsRead: () => Promise<boolean>;
+  deleteDecommissioned: (id: string) => Promise<boolean>;
 }
 
 const SandboxContext = createContext<SandboxContextValue | null>(null);
@@ -265,6 +268,11 @@ export function SandboxProvider({ children }: { children: React.ReactNode }) {
     [run, post]
   );
 
+  const agreeDecommission = useCallback(
+    async (id: string) => (await run(() => post(`/sandboxes/${path(id)}/decommission/agree`))) !== null,
+    [run, post]
+  );
+
   const rejectRequest = useCallback(
     async (id: string, reason: string) => {
       const s = await run(() => post<Sandbox>(`/approvals/${path(id)}/reject`, { reason }));
@@ -306,6 +314,21 @@ export function SandboxProvider({ children }: { children: React.ReactNode }) {
     [run, post]
   );
 
+  const markNotificationsRead = useCallback(
+    async () => (await run(() => post<{ updated: number }>("/notifications/read"))) !== null,
+    [run, post]
+  );
+
+  const deleteDecommissioned = useCallback(
+    async (id: string) =>
+      (await run(() =>
+        apiFetch<{ id: string; deleted: boolean }>(getToken, `/admin/sandboxes/${path(id)}`, {
+          method: "DELETE",
+        })
+      )) !== null,
+    [run, getToken]
+  );
+
   const saveBusinessUnit = useCallback(
     async (unit: Omit<BusinessUnit, "id">, id?: string) =>
       (await run(() => apiFetch<BusinessUnit>(getToken, `/admin/business-units${id ? `/${path(id)}` : ""}`, { method: id ? "PUT" : "POST", body: unit }))) !== null,
@@ -339,6 +362,7 @@ export function SandboxProvider({ children }: { children: React.ReactNode }) {
       addRequest,
       requestExtension,
       decommissionRequested,
+      agreeDecommission,
       approveRequest,
       rejectRequest,
       retryProvisioning,
@@ -347,6 +371,8 @@ export function SandboxProvider({ children }: { children: React.ReactNode }) {
       rejectExtension,
       approveDecommission,
       rejectDecommission,
+      markNotificationsRead,
+      deleteDecommissioned,
     }),
     [
       mine,
@@ -364,6 +390,7 @@ export function SandboxProvider({ children }: { children: React.ReactNode }) {
       addRequest,
       requestExtension,
       decommissionRequested,
+      agreeDecommission,
       approveRequest,
       rejectRequest,
       retryProvisioning,
@@ -372,6 +399,8 @@ export function SandboxProvider({ children }: { children: React.ReactNode }) {
       rejectExtension,
       approveDecommission,
       rejectDecommission,
+      markNotificationsRead,
+      deleteDecommissioned,
     ]
   );
 

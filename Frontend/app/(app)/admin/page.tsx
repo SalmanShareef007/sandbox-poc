@@ -6,7 +6,6 @@ import {
   CalendarClock,
   CircleCheck,
   ClipboardCheck,
-  IndianRupee,
   Hourglass,
   RefreshCw,
   ShieldCheck,
@@ -111,7 +110,7 @@ export default function AdminOverviewPage() {
     },
     { icon: ShieldCheck, label: "Active sandboxes", value: String(active.length), sub: "Running normally" },
     { icon: Hourglass, label: "Expiring soon", value: String(expiring.length), sub: "Within 7 days" },
-    { icon: IndianRupee, label: "Reported spend", value: money(costed.length ? totalSpend : null), sub: `${costed.length} of ${all.length} sandboxes reported` },
+    { icon: Wallet, label: "Reported spend", value: money(costed.length ? totalSpend : null), sub: `${costed.length} of ${all.length} sandboxes reported` },
     { icon: AlertTriangle, label: "Budget alerts", value: String(alerts.length), sub: "At 90% of budget or more" },
   ];
 

@@ -9,6 +9,8 @@ from app.core.security import is_admin
 from app.db.database import connection, transaction
 from app.db.errors import guarded
 from app.db.tables import notifications as n
+from app.db.tables import notification_admin_reads as admin_reads
+from app.db.tables import sandbox_requests
 from app.repositories._sql import insert_for, iso, to_uuid, utcnow
 from app.services.notify_channels import link_for, render_email, send_admin_webhook
 
@@ -60,12 +62,80 @@ def list_for_user(claims: dict) -> list[dict]:
         visible.append(and_(n.c.audience == "owner", n.c.owner_object_id == claims["oid"], n.c.owner_tenant_id == claims["tid"]))
     if not visible:
         return []
-    query = select(n.c.id, n.c.category, n.c.title, n.c.recipient_text, n.c.created_at).where(or_(*visible)).order_by(n.c.created_at.desc()).limit(200)
+    query = (
+        select(
+            n.c.id, n.c.category, n.c.title, n.c.recipient_text, n.c.created_at,
+            n.c.audience, n.c.owner_object_id, n.c.owner_tenant_id, n.c.owner_read_at,
+            select(sandbox_requests.c.reference).where(sandbox_requests.c.id == n.c.request_id).scalar_subquery().label("sandbox_reference"),
+            select(admin_reads.c.notification_id).where(
+                admin_reads.c.notification_id == n.c.id,
+                admin_reads.c.admin_object_id == claims.get("oid"),
+                admin_reads.c.admin_tenant_id == claims.get("tid"),
+            ).exists().label("admin_read"),
+        )
+        .where(or_(*visible))
+        .order_by(n.c.created_at.desc())
+        .limit(200)
+    )
     with connection() as conn:
         return [
-            {"id": row.id, "category": row.category, "title": row.title, "to": row.recipient_text, "when": iso(row.created_at)}
+            {
+                "id": row.id,
+                "category": row.category,
+                "title": row.title,
+                "to": row.recipient_text,
+                "when": iso(row.created_at),
+                "sandboxId": row.sandbox_reference,
+                "read": (
+                    row.owner_read_at is not None
+                    if row.audience == "owner"
+                    and claims.get("oid") == row.owner_object_id
+                    and claims.get("tid") == row.owner_tenant_id
+                    else row.admin_read if admin else row.owner_read_at is not None
+                ),
+            }
             for row in conn.execute(query)
         ]
+
+
+@guarded("notification.mark_all_read")
+def mark_all_read(claims: dict) -> int:
+    admin = is_admin(claims)
+    owner_scope = None
+    if claims.get("oid") and claims.get("tid"):
+        owner_scope = and_(
+            n.c.audience == "owner",
+            n.c.owner_object_id == claims["oid"],
+            n.c.owner_tenant_id == claims["tid"],
+        )
+    if not admin and owner_scope is None:
+        return 0
+
+    now = utcnow()
+    updated = 0
+    with transaction() as conn:
+        if owner_scope is not None:
+            updated += conn.execute(
+                update(n)
+                .where(owner_scope, n.c.owner_read_at.is_(None))
+                .values(owner_read_at=now, updated_at=now)
+            ).rowcount
+        if admin and claims.get("oid") and claims.get("tid"):
+            admin_scope = or_(n.c.audience == "admins", n.c.category.in_(("Budget", "Lifecycle")))
+            ids = conn.execute(select(n.c.id).where(admin_scope)).scalars().all()
+            for notification_id in ids:
+                inserted = conn.execute(
+                    insert_for(conn)(admin_reads).values(
+                        notification_id=notification_id,
+                        admin_object_id=claims["oid"],
+                        admin_tenant_id=claims["tid"],
+                        read_at=now,
+                    ).on_conflict_do_nothing()
+                ).rowcount
+                updated += inserted
+                if inserted:
+                    conn.execute(update(n).where(n.c.id == notification_id).values(updated_at=now))
+    return updated
 
 
 @guarded("notification.update")

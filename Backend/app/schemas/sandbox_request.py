@@ -46,8 +46,8 @@ class SandboxRequestCreate(CamelModel):
     @field_validator("role")
     @classmethod
     def role_allowed(cls, value: str) -> str:
-        if value not in settings.ALLOWED_SANDBOX_ROLES:
-            raise ValueError(f"Role must be one of: {', '.join(settings.ALLOWED_SANDBOX_ROLES)}")
+        if value not in ("Contributor", "Owner") or value not in settings.ALLOWED_SANDBOX_ROLES:
+            raise ValueError("Role must be an enabled Contributor or Owner role.")
         if value == "Owner" and not settings.ALLOW_OWNER_ROLE_REQUESTS:
             raise ValueError("Owner access has not been enabled by the platform administrator.")
         return value
