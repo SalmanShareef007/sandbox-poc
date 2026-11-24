@@ -93,6 +93,15 @@ stages:
       - job: TerraformValidation
         displayName: 'Terraform Validation'
         steps:
+          - task: AzureCLI@2
+            displayName: 'Azure: Authenticate'
+            inputs:
+              azureSubscription: '$(AZURE_SERVICE_CONNECTION)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                az account show
+
           - task: TerraformInstaller@0
             inputs:
               terraformVersion: '1.17.1'
