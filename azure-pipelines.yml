@@ -19,13 +19,17 @@ variables:
   ACR_NAME: 'acrsbxdev7e76e808'
   ACR_RESOURCE_GROUP: 'RG-SANDBOX-DEV'
   AZURE_SERVICE_CONNECTION: 'Azure Connection'
-  TF_STATE_RESOURCE_GROUP: 'RG-SANDBOX-DEV'
-  TF_STATE_STORAGE_ACCOUNT: ''  # Set in pipeline variables
-  TF_STATE_CONTAINER: 'tfstate'
   IMAGE_TAG: $(Build.BuildId)
   API_IMAGE_NAME: 'sandbox-api'
   WORKER_IMAGE_NAME: 'sandbox-worker'
   UI_IMAGE_NAME: 'sandbox-ui'
+  # Terraform Backend Variables
+  TERRAFORM_STATE_RESOURCE_GROUP: ''  # Set in pipeline variables
+  TERRAFORM_STATE_STORAGE_ACCOUNT: ''  # Set in pipeline variables
+  TERRAFORM_STATE_CONTAINER: ''  # Set in pipeline variables
+  TERRAFORM_STATE_KEY: ''  # Set in pipeline variables
+  ARM_SUBSCRIPTION_ID: ''  # Set in pipeline variables
+  ARM_TENANT_ID: ''  # Set in pipeline variables
 
 stages:
   # ============================================================================
@@ -93,15 +97,6 @@ stages:
       - job: TerraformValidation
         displayName: 'Terraform Validation'
         steps:
-          - task: AzureCLI@2
-            displayName: 'Azure: Authenticate'
-            inputs:
-              azureSubscription: '$(AZURE_SERVICE_CONNECTION)'
-              scriptType: 'bash'
-              scriptLocation: 'inlineScript'
-              inlineScript: |
-                az account show
-
           - task: TerraformInstaller@0
             inputs:
               terraformVersion: '1.17.1'
@@ -111,15 +106,27 @@ stages:
               terraform -chdir=Terraform/environments/dev init \
                 -backend=false -input=false
             displayName: 'Terraform: Init (backend disabled)'
+            env:
+              ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
+              ARM_TENANT_ID: $(ARM_TENANT_ID)
+              ARM_USE_MSI: true
 
           - script: |
               terraform -chdir=Terraform/environments/dev validate
             displayName: 'Terraform: Validate'
+            env:
+              ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
+              ARM_TENANT_ID: $(ARM_TENANT_ID)
+              ARM_USE_MSI: true
 
           - script: |
               terraform -chdir=Terraform/environments/dev test \
                 -test-directory=tests
             displayName: 'Terraform: Run tests'
+            env:
+              ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
+              ARM_TENANT_ID: $(ARM_TENANT_ID)
+              ARM_USE_MSI: true
 
   # ============================================================================
   # STAGE 2: BUILD & PUSH IMAGES
@@ -263,10 +270,10 @@ stages:
                     command: 'init'
                     workingDirectory: '$(System.DefaultWorkingDirectory)/Terraform/environments/dev'
                     backendServiceArm: '$(AZURE_SERVICE_CONNECTION)'
-                    backendAzureRmResourceGroupName: '$(TF_STATE_RESOURCE_GROUP)'
-                    backendAzureRmStorageAccountName: '$(TF_STATE_STORAGE_ACCOUNT)'
-                    backendAzureRmContainerName: '$(TF_STATE_CONTAINER)'
-                    backendAzureRmKey: 'dev.tfstate'
+                    backendAzureRmResourceGroupName: '$(TERRAFORM_STATE_RESOURCE_GROUP)'
+                    backendAzureRmStorageAccountName: '$(TERRAFORM_STATE_STORAGE_ACCOUNT)'
+                    backendAzureRmContainerName: '$(TERRAFORM_STATE_CONTAINER)'
+                    backendAzureRmKey: '$(TERRAFORM_STATE_KEY)'
 
                 - task: TerraformTaskV4@4
                   displayName: 'Terraform: Plan'
