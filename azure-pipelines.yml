@@ -1,0 +1,355 @@
+trigger:
+  branches:
+    include:
+      - dev/vim
+  paths:
+    exclude:
+      - docs/**
+      - '*.md'
+
+pr:
+  branches:
+    include:
+      - dev/vim
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  ACR_NAME: 'acrsbxdev7e76e808'
+  ACR_RESOURCE_GROUP: 'RG-SANDBOX-DEV'
+  AZURE_SERVICE_CONNECTION: 'Azure Connection'
+  TF_STATE_RESOURCE_GROUP: 'RG-SANDBOX-DEV'
+  TF_STATE_STORAGE_ACCOUNT: ''  # Set in pipeline variables
+  TF_STATE_CONTAINER: 'tfstate'
+  IMAGE_TAG: $(Build.BuildId)
+  API_IMAGE_NAME: 'sandbox-api'
+  WORKER_IMAGE_NAME: 'sandbox-worker'
+  UI_IMAGE_NAME: 'sandbox-ui'
+
+stages:
+  # ============================================================================
+  # STAGE 1: VALIDATE & TEST
+  # ============================================================================
+  - stage: Validate
+    displayName: '1️⃣ Validate & Test'
+    jobs:
+      - job: BackendValidation
+        displayName: 'Backend Validation (Python)'
+        steps:
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '3.12'
+            displayName: 'Python: Set version to 3.12'
+
+          - script: |
+              pip install -r Backend/requirements.txt
+            displayName: 'Python: Install dependencies'
+
+          - script: |
+              ruff check Backend/app Backend/tests
+            displayName: 'Python: Lint with Ruff'
+
+          - script: |
+              python -m pytest Backend/tests -v \
+                --junit-xml=$(Common.TestResultsDirectory)/junit.xml \
+                --cov=Backend/app --cov-report=xml
+            displayName: 'Python: Run tests with coverage'
+
+          - task: PublishTestResults@2
+            inputs:
+              testResultsFormat: 'JUnit'
+              testResultsFiles: '$(Common.TestResultsDirectory)/junit.xml'
+              failTaskOnFailedTests: true
+            condition: always()
+            displayName: 'Publish: Test results'
+
+          - task: PublishCodeCoverageResults@1
+            inputs:
+              codeCoverageTool: Cobertura
+              summaryFileLocation: '$(Common.TestResultsDirectory)/coverage.xml'
+            condition: always()
+
+      - job: FrontendValidation
+        displayName: 'Frontend Validation (Node.js)'
+        steps:
+          - task: UseNode@1
+            inputs:
+              version: '24'
+            displayName: 'Node: Set version to 24'
+
+          - script: |
+              npm --prefix Frontend ci
+            displayName: 'Node: Install dependencies'
+
+          - script: |
+              npm --prefix Frontend run lint
+            displayName: 'Node: Lint with ESLint'
+
+          - script: |
+              npm --prefix Frontend run build
+            displayName: 'Node: Build Next.js app'
+
+      - job: TerraformValidation
+        displayName: 'Terraform Validation'
+        steps:
+          - task: TerraformInstaller@0
+            inputs:
+              terraformVersion: '1.17.1'
+            displayName: 'Terraform: Install v1.17.1'
+
+          - script: |
+              terraform -chdir=Terraform/environments/dev init \
+                -backend=false -input=false
+            displayName: 'Terraform: Init (backend disabled)'
+
+          - script: |
+              terraform -chdir=Terraform/environments/dev validate
+            displayName: 'Terraform: Validate'
+
+          - script: |
+              terraform -chdir=Terraform/environments/dev test \
+                -test-directory=tests
+            displayName: 'Terraform: Run tests'
+
+  # ============================================================================
+  # STAGE 2: BUILD & PUSH IMAGES
+  # ============================================================================
+  - stage: BuildAndPush
+    displayName: '2️⃣ Build & Push Images'
+    dependsOn: Validate
+    condition: succeeded()
+    jobs:
+      - job: BuildDockerImages
+        displayName: 'Build Docker Images'
+        steps:
+          - task: AzureCLI@2
+            displayName: 'Docker: Login to ACR'
+            inputs:
+              azureSubscription: '$(AZURE_SERVICE_CONNECTION)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                az acr login --name $(ACR_NAME)
+
+          - task: Docker@2
+            displayName: 'Docker: Build API image'
+            inputs:
+              command: build
+              repository: '$(ACR_NAME).azurecr.io/$(API_IMAGE_NAME)'
+              dockerfile: 'Backend/Dockerfile'
+              tags: '$(IMAGE_TAG),latest'
+              arguments: '--target api'
+
+          - task: Docker@2
+            displayName: 'Docker: Build Worker image'
+            inputs:
+              command: build
+              repository: '$(ACR_NAME).azurecr.io/$(WORKER_IMAGE_NAME)'
+              dockerfile: 'Backend/Dockerfile'
+              tags: '$(IMAGE_TAG),latest'
+              arguments: '--target worker'
+
+          - task: Docker@2
+            displayName: 'Docker: Build UI image'
+            inputs:
+              command: build
+              repository: '$(ACR_NAME).azurecr.io/$(UI_IMAGE_NAME)'
+              dockerfile: 'Frontend/Dockerfile'
+              tags: '$(IMAGE_TAG),latest'
+              arguments: '--build-arg NEXT_PUBLIC_CLIENT_ID=$(NEXT_PUBLIC_CLIENT_ID) --build-arg NEXT_PUBLIC_TENANT_ID=$(NEXT_PUBLIC_TENANT_ID) --build-arg NEXT_PUBLIC_REDIRECT_URI=$(NEXT_PUBLIC_REDIRECT_URI) --build-arg NEXT_PUBLIC_API_SCOPE=$(NEXT_PUBLIC_API_SCOPE) --build-arg NEXT_PUBLIC_API_BASE_URL=$(NEXT_PUBLIC_API_BASE_URL)'
+
+      - job: SecurityScan
+        displayName: 'Security Scanning (Trivy)'
+        dependsOn: BuildDockerImages
+        condition: succeeded()
+        steps:
+          - script: |
+              docker pull aquasec/trivy:latest
+              docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+                aquasec/trivy:latest image --severity HIGH,CRITICAL \
+                --exit-code 1 \
+                $(ACR_NAME).azurecr.io/$(API_IMAGE_NAME):latest || true
+            displayName: 'Trivy: Scan API image'
+            continueOnError: true
+
+          - script: |
+              docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+                aquasec/trivy:latest image --severity HIGH,CRITICAL \
+                --exit-code 1 \
+                $(ACR_NAME).azurecr.io/$(UI_IMAGE_NAME):latest || true
+            displayName: 'Trivy: Scan UI image'
+            continueOnError: true
+
+      - job: PushToRegistry
+        displayName: 'Push Images to ACR'
+        dependsOn: SecurityScan
+        condition: succeeded()
+        steps:
+          - task: AzureCLI@2
+            displayName: 'Azure: Login to ACR'
+            inputs:
+              azureSubscription: '$(AZURE_SERVICE_CONNECTION)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                az acr login --name $(ACR_NAME)
+
+          - task: Docker@2
+            displayName: 'Docker: Push API image'
+            inputs:
+              command: push
+              repository: '$(ACR_NAME).azurecr.io/$(API_IMAGE_NAME)'
+              tags: '$(IMAGE_TAG),latest'
+
+          - task: Docker@2
+            displayName: 'Docker: Push Worker image'
+            inputs:
+              command: push
+              repository: '$(ACR_NAME).azurecr.io/$(WORKER_IMAGE_NAME)'
+              tags: '$(IMAGE_TAG),latest'
+
+          - task: Docker@2
+            displayName: 'Docker: Push UI image'
+            inputs:
+              command: push
+              repository: '$(ACR_NAME).azurecr.io/$(UI_IMAGE_NAME)'
+              tags: '$(IMAGE_TAG),latest'
+
+  # ============================================================================
+  # STAGE 3: DEPLOY TO DEV
+  # ============================================================================
+  - stage: DeployDev
+    displayName: '3️⃣ Deploy to Dev'
+    dependsOn: BuildAndPush
+    condition: succeeded()
+    jobs:
+      - deployment: DeployDevInfra
+        displayName: 'Deploy Dev Infrastructure'
+        environment: 'sandbox-dev'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - task: TerraformInstaller@0
+                  inputs:
+                    terraformVersion: '1.17.1'
+                  displayName: 'Terraform: Install v1.17.1'
+
+                - task: AzureCLI@2
+                  displayName: 'Azure: Authenticate'
+                  inputs:
+                    azureSubscription: '$(AZURE_SERVICE_CONNECTION)'
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      az account show
+
+                - task: TerraformTaskV4@4
+                  displayName: 'Terraform: Init'
+                  inputs:
+                    provider: 'azurerm'
+                    command: 'init'
+                    workingDirectory: '$(System.DefaultWorkingDirectory)/Terraform/environments/dev'
+                    backendServiceArm: '$(AZURE_SERVICE_CONNECTION)'
+                    backendAzureRmResourceGroupName: '$(TF_STATE_RESOURCE_GROUP)'
+                    backendAzureRmStorageAccountName: '$(TF_STATE_STORAGE_ACCOUNT)'
+                    backendAzureRmContainerName: '$(TF_STATE_CONTAINER)'
+                    backendAzureRmKey: 'dev.tfstate'
+
+                - task: TerraformTaskV4@4
+                  displayName: 'Terraform: Plan'
+                  inputs:
+                    provider: 'azurerm'
+                    command: 'plan'
+                    workingDirectory: '$(System.DefaultWorkingDirectory)/Terraform/environments/dev'
+                    environmentServiceNameAzureRM: '$(AZURE_SERVICE_CONNECTION)'
+                    commandOptions: '-out=tfplan'
+
+                - task: TerraformTaskV4@4
+                  displayName: 'Terraform: Apply'
+                  inputs:
+                    provider: 'azurerm'
+                    command: 'apply'
+                    workingDirectory: '$(System.DefaultWorkingDirectory)/Terraform/environments/dev'
+                    environmentServiceNameAzureRM: '$(AZURE_SERVICE_CONNECTION)'
+                    commandOptions: 'tfplan'
+
+      - deployment: DeployDevApps
+        displayName: 'Deploy Dev Applications'
+        dependsOn: DeployDevInfra
+        environment: 'sandbox-dev'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - task: AzureCLI@2
+                  displayName: 'Azure: Update API web app'
+                  inputs:
+                    azureSubscription: '$(AZURE_SERVICE_CONNECTION)'
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      az webapp config container set \
+                        --name sandbox-api-app \
+                        --resource-group $(ACR_RESOURCE_GROUP) \
+                        --docker-custom-image-name $(ACR_NAME).azurecr.io/$(API_IMAGE_NAME):$(IMAGE_TAG) \
+                        --docker-registry-server-url https://$(ACR_NAME).azurecr.io \
+                        --docker-registry-server-username $(ACR_USERNAME) \
+                        --docker-registry-server-password '$(ACR_PASSWORD)'
+
+                - task: AzureCLI@2
+                  displayName: 'Azure: Update UI web app'
+                  inputs:
+                    azureSubscription: '$(AZURE_SERVICE_CONNECTION)'
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      az webapp config container set \
+                        --name sandbox-ui-app \
+                        --resource-group $(ACR_RESOURCE_GROUP) \
+                        --docker-custom-image-name $(ACR_NAME).azurecr.io/$(UI_IMAGE_NAME):$(IMAGE_TAG) \
+                        --docker-registry-server-url https://$(ACR_NAME).azurecr.io \
+                        --docker-registry-server-username $(ACR_USERNAME) \
+                        --docker-registry-server-password '$(ACR_PASSWORD)'
+
+                - task: AzureCLI@2
+                  displayName: 'Azure: Restart web apps'
+                  inputs:
+                    azureSubscription: '$(AZURE_SERVICE_CONNECTION)'
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      az webapp restart --name sandbox-api-app --resource-group $(ACR_RESOURCE_GROUP)
+                      az webapp restart --name sandbox-ui-app --resource-group $(ACR_RESOURCE_GROUP)
+                      echo "✓ Web apps restarted successfully"
+
+                - script: |
+                    echo "Waiting for apps to warm up..."
+                    sleep 30
+                  displayName: 'Wait: 30 seconds for warm-up'
+
+                - task: AzureCLI@2
+                  displayName: 'Health: Check API endpoint'
+                  inputs:
+                    azureSubscription: '$(AZURE_SERVICE_CONNECTION)'
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      API_FQDN=$(az webapp list --resource-group $(ACR_RESOURCE_GROUP) --query "[?name=='sandbox-api-app'].hostNames[0]" -o tsv)
+                      API_URL="https://${API_FQDN}/api/v1/health"
+                      echo "Checking API health at: $API_URL"
+                      
+                      for i in {1..30}; do
+                        if curl -f -s -o /dev/null "$API_URL"; then
+                          echo "✓ API is healthy (attempt $i)"
+                          exit 0
+                        fi
+                        echo "Attempt $i/30: Waiting for API..."
+                        sleep 5
+                      done
+                      echo "✗ API health check failed after 30 attempts"
+                      exit 1
+                  continueOnError: true
