@@ -99,7 +99,10 @@ def list_for_user(claims: dict) -> list[dict]:
 
 
 @guarded("notification.mark_all_read")
-def mark_all_read(claims: dict) -> int:
+def mark_all_read(claims: dict, notification_ids: list[str] | None = None) -> int:
+    if notification_ids == []:
+        return 0
+    requested = n.c.id.in_(notification_ids) if notification_ids is not None else None
     admin = is_admin(claims)
     owner_scope = None
     if claims.get("oid") and claims.get("tid"):
@@ -115,6 +118,8 @@ def mark_all_read(claims: dict) -> int:
     updated = 0
     with transaction() as conn:
         if owner_scope is not None:
+            if requested is not None:
+                owner_scope = and_(owner_scope, requested)
             updated += conn.execute(
                 update(n)
                 .where(owner_scope, n.c.owner_read_at.is_(None))
@@ -122,6 +127,16 @@ def mark_all_read(claims: dict) -> int:
             ).rowcount
         if admin and claims.get("oid") and claims.get("tid"):
             admin_scope = or_(n.c.audience == "admins", n.c.category.in_(("Budget", "Lifecycle")))
+            if owner_scope is not None:
+                admin_scope = and_(admin_scope, ~and_(
+                    n.c.audience == "owner",
+                    n.c.owner_object_id.is_not(None),
+                    n.c.owner_tenant_id.is_not(None),
+                    n.c.owner_object_id == claims["oid"],
+                    n.c.owner_tenant_id == claims["tid"],
+                ))
+            if requested is not None:
+                admin_scope = and_(admin_scope, requested)
             ids = conn.execute(select(n.c.id).where(admin_scope)).scalars().all()
             for notification_id in ids:
                 inserted = conn.execute(

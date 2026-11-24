@@ -22,18 +22,27 @@ export default function NotificationsPage() {
   const { notifications, isLoading, markNotificationsRead } = useSandboxes();
   const { isAdmin } = useRole();
   const [tab, setTab] = useState<Tab>("All");
-  const readOnOpen = useRef(false);
+  const markingRead = useRef(false);
+  const [readFailed, setReadFailed] = useState(false);
+  const rows = notifications.filter((n) => tab === "All" || n.category === tab);
 
   useEffect(() => {
-    if (isLoading || readOnOpen.current) return;
-    readOnOpen.current = true;
-    void markNotificationsRead();
-  }, [isLoading, markNotificationsRead]);
+    const markVisibleRead = async () => {
+      if (document.hidden || isLoading || readFailed || markingRead.current) return;
+      const ids = notifications.filter((n) => !n.read && (tab === "All" || n.category === tab)).map((n) => n.id);
+      if (!ids.length) return;
+      markingRead.current = true;
+      const saved = await markNotificationsRead(ids);
+      markingRead.current = false;
+      if (!saved) setReadFailed(true);
+    };
+    void markVisibleRead();
+    document.addEventListener("visibilitychange", markVisibleRead);
+    return () => document.removeEventListener("visibilitychange", markVisibleRead);
+  }, [isLoading, markNotificationsRead, notifications, readFailed, tab]);
 
   const countFor = (t: Tab) =>
     t === "All" ? notifications.length : notifications.filter((n) => n.category === t).length;
-
-  const rows = notifications.filter((n) => tab === "All" || n.category === tab);
 
   return (
     <section className="rounded-card border border-border bg-surface shadow-card">
@@ -53,6 +62,13 @@ export default function NotificationsPage() {
           </button>
         ))}
       </div>
+
+      {readFailed && (
+        <p role="alert" className="px-6 py-3 text-sm text-muted">
+          Could not save your read status.{" "}
+          <button type="button" className="text-accent underline" onClick={() => setReadFailed(false)}>Try again</button>
+        </p>
+      )}
 
       {/* List */}
       {isLoading ? (

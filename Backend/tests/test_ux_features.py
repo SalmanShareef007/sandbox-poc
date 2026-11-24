@@ -1,4 +1,7 @@
+import asyncio
+from contextlib import aclosing
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -84,6 +87,20 @@ def test_events_endpoint_requires_authentication(database):
         assert client.get("/api/v1/events").status_code in (401, 403)
 
 
+def test_events_stream_triggers_refresh_on_connect_and_reconnect(monkeypatch):
+    from app.api.v1 import events
+
+    monkeypatch.setattr(events, "current_version", lambda: "current-version")
+
+    async def initial_frames():
+        request = SimpleNamespace(is_disconnected=AsyncMock(return_value=False))
+        async with aclosing(events._stream(request)) as stream:
+            return await anext(stream), await anext(stream)
+
+    for _ in range(2):
+        assert asyncio.run(initial_frames()) == ("retry: 3000\n\n", "event: change\ndata: 1\n\n")
+
+
 def test_email_template_escapes_content_and_links_to_sandbox(monkeypatch):
     monkeypatch.setattr(settings, "FRONTEND_BASE_URL", "https://sandbox.example.com/")
     link = notify_channels.link_for("SBX-1004: <b>Approved</b>", admins=False)
@@ -141,3 +158,25 @@ def test_notifications_are_marked_read_for_the_current_user(client):
     assert notices[0]["read"] is False
     assert client.post("/api/v1/notifications/read").json() == {"updated": 1}
     assert client.get("/api/v1/notifications").json()[0]["read"] is True
+
+
+def test_marking_displayed_notifications_read_leaves_new_arrivals_unread(client):
+    from app.repositories.request_repository import SandboxRequestRepository
+    from app.services.notification_service import publish
+
+    request = SandboxRequestRepository.create({
+        "sandbox_id": "eng-owner-001", "user_id": OWNER["oid"],
+        "tenant_id": TENANT, "owner": OWNER["preferred_username"],
+    })
+    publish(request, "seen", "Seen")
+    seen_id = client.get("/api/v1/notifications").json()[0]["id"]
+    publish(request, "new", "New")
+    url = "/api/v1/notifications/read"
+    app.dependency_overrides[get_current_user] = lambda: OTHER
+    assert client.post(url, json={"ids": [seen_id]}).json() == {"updated": 0}
+    app.dependency_overrides[get_current_user] = lambda: OWNER
+    assert client.post(url, json={"ids": [seen_id]}).json() == {"updated": 1}
+    assert client.post(url, json={"ids": [seen_id]}).json() == {"updated": 0}
+    assert {notice["title"]: notice["read"] for notice in client.get("/api/v1/notifications").json()} == {
+        "Seen": True, "New": False,
+    }

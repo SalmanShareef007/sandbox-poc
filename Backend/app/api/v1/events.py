@@ -58,10 +58,9 @@ async def _stream(request: Request):
             logger.exception("Change feed check failed")
             version = last
         if version is not None and version != last:
-            if last is not None:
-                yield "event: change\ndata: 1\n\n"
             last = version
             quiet = 0
+            yield "event: change\ndata: 1\n\n"
         else:
             quiet += 1
             if quiet >= KEEPALIVE_EVERY:

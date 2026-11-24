@@ -35,6 +35,10 @@ exact local redirect URI in the Entra SPA application.
 Navigation uses verified roles from the API. Administrator actions are also
 authorized by the backend; hiding a page is not an authorization boundary.
 
+Opening Notifications saves the read status of notices shown in the selected tab.
+Unread counts and sandbox data refresh automatically through the change feed,
+with polling and refreshes when the browser regains focus or connectivity.
+
 ## Checks
 
 ```powershell

@@ -7,10 +7,11 @@ interface ModalProps {
   open: boolean;
   onClose: () => void;
   title: string;
+  wide?: boolean;
   children: React.ReactNode;
 }
 
-export default function Modal({ open, onClose, title, children }: ModalProps) {
+export default function Modal({ open, onClose, title, children, wide = false }: ModalProps) {
   const titleId = useId();
 
   useEffect(() => {
@@ -34,7 +35,7 @@ export default function Modal({ open, onClose, title, children }: ModalProps) {
         aria-modal="true"
         aria-labelledby={titleId}
         onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-md border border-border bg-surface shadow-card"
+        className={`w-full ${wide ? "max-w-5xl" : "max-w-md"} border border-border bg-surface shadow-card`}
       >
         <div className="flex items-center justify-between border-b border-border px-6 py-4">
           <h3 id={titleId} className="font-semibold text-foreground">

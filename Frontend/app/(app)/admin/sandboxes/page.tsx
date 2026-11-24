@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { Download, Flag, Search, SearchX, Trash2 } from "lucide-react";
+import { Download, Flag, Search, SearchX } from "lucide-react";
 import { downloadCsv } from "@/lib/csv";
 import StatusBadge from "@/components/ui/StatusBadge";
 import Skeleton from "@/components/ui/Skeleton";
@@ -12,7 +12,6 @@ import { barColor, hasComparableCost, useMoney, usedPct } from "@/components/adm
 import { useSandboxes } from "@/components/providers/SandboxProvider";
 import type { Sandbox, SandboxStatus } from "@/lib/types";
 import ReasonDialog from "@/components/admin/ReasonDialog";
-import { useToast } from "@/components/providers/ToastProvider";
 
 type StatusFilter = "All" | SandboxStatus;
 type TypeFilter = "All" | Sandbox["type"];
@@ -36,8 +35,7 @@ const selectCls =
 
 export default function AdminSandboxesPage() {
   const money = useMoney();
-  const { adminRequests: all, isLoading, flagCleanup, deleteDecommissioned, configuration } = useSandboxes();
-  const { toast } = useToast();
+  const { adminRequests: all, isLoading, flagCleanup, configuration } = useSandboxes();
   const [cleanup, setCleanup] = useState<Sandbox | null>(null);
   const [status, setStatus] = useState<StatusFilter>("All");
   const [unit, setUnit] = useState("All");
@@ -88,15 +86,6 @@ export default function AdminSandboxesPage() {
     setTypeFilter("All");
     setQuery("");
   };
-  const removeDecommissioned = async (sandbox: Sandbox) => {
-    const confirmed = window.confirm(
-      `Permanently remove ${sandbox.name} and its portal history? This is only available after Azure cleanup has completed; it does not delete Azure resources.`
-    );
-    if (confirmed && await deleteDecommissioned(sandbox.id)) {
-      toast(`Removed ${sandbox.name} from the portal.`, "success");
-    }
-  };
-
   return (
     <section className="border border-border bg-surface shadow-card">
       <div className="border-b border-border px-6 pt-2">
@@ -274,16 +263,7 @@ export default function AdminSandboxesPage() {
                       )}
                     </td>
                     <td className="px-6 py-4">
-                      {s.status === "Decommissioned" ? (
-                        <button
-                          onClick={() => void removeDecommissioned(s)}
-                          className="inline-flex items-center gap-2 text-sm text-red-600 hover:text-red-700 dark:text-red-400"
-                          title="Permanently remove this decommissioned record and its portal history"
-                        >
-                          <Trash2 size={16} />
-                          Delete record
-                        </button>
-                      ) : s.cleanupFlagged ? (
+                      {s.status === "Decommissioned" ? null : s.cleanupFlagged ? (
                         <p className="text-xs text-muted">Flagged; eligible {s.cleanupEligibleOn}</p>
                       ) : s.cleanupAvailable ? (
                         <button onClick={() => setCleanup(s)} className="inline-flex items-center gap-2 text-sm text-accent">

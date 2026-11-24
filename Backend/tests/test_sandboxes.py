@@ -62,6 +62,35 @@ def test_resource_costs_require_sandbox_owner(client, monkeypatch):
 	assert client.get(url).json() == [{"id": request["resource_id"]}]
 	app.dependency_overrides[get_current_user] = lambda: {**OWNER, "oid": OTHER_OID}
 	assert client.get(url).status_code == 404
+	assert client.get(f"{url}/inventory").status_code == 404
+	assert client.get(f"{url}/costs").status_code == 404
+
+
+def test_resource_inventory_does_not_depend_on_cost_management(client, monkeypatch):
+	from datetime import datetime, timezone
+
+	from app.core.config import settings
+	from app.repositories.request_repository import SandboxRequestRepository
+	from app.services import resource_cost_service as service
+
+	group = "/subscriptions/test/resourceGroups/rg-inventory"
+	request = SandboxRequestRepository.create({
+		"sandbox_id": "eng-inventory-001", "user_id": OWNER["oid"], "tenant_id": OWNER["tid"],
+		"owner": OWNER["preferred_username"], "status": "active", "resource_id": group,
+	})
+	rows = [{"id": group + "/providers/Microsoft.Storage/storageAccounts/store1", "name": "store1",
+	         "type": "Microsoft.Storage/storageAccounts", "region": "centralindia", "sku": "Standard_LRS"}]
+	monkeypatch.setattr(service, "list_resources", lambda resource_id: rows)
+	url = f"/api/v1/sandboxes/{request['reference']}/resources"
+	costs = {rows[0]["id"].lower(): {"cost": 1.25, "currency": "USD"}}
+	fetched_at = datetime(2026, 11, 19, 12, 0, tzinfo=timezone.utc)
+	monkeypatch.setattr(service, "get_cost_snapshot", lambda resource_id: service.CostSnapshot(costs, fetched_at, stale=True))
+	assert client.get(f"{url}/costs").json() == {
+		"costs": costs, "fetchedAt": "2026-11-19T12:00:00+00:00", "stale": True,
+	}
+	monkeypatch.setattr(settings, "COST_MANAGEMENT_ENABLED", False)
+	assert client.get(f"{url}/costs").status_code == 409
+	assert client.get(f"{url}/inventory").json() == rows
 
 
 def test_resource_costs_paginate_and_leave_unreported_cost_unset(monkeypatch):
@@ -80,7 +109,8 @@ def test_resource_costs_paginate_and_leave_unreported_cost_unset(monkeypatch):
 					{"id": group + "/providers/Microsoft.Storage/storageAccounts/store1", "name": "store1", "type": "Microsoft.Storage/storageAccounts"},
 				]})
 			return httpx.Response(200, json={"value": [
-				{"id": resource_id, "name": "vm1", "type": "Microsoft.Compute/virtualMachines"},
+				{"id": resource_id, "name": "vm1", "type": "Microsoft.Compute/virtualMachines",
+				 "location": "centralindia", "sku": {"name": "Standard_B2s"}},
 			], "nextLink": f"https://management.azure.com{group}/resources?page=2"})
 		return httpx.Response(200, json={"properties": {"columns": [
 			{"name": "Cost"}, {"name": "ResourceId"}, {"name": "Currency"},
@@ -97,6 +127,12 @@ def test_resource_costs_paginate_and_leave_unreported_cost_unset(monkeypatch):
 	assert result[0]["currency"] == "USD"
 	assert result[1]["cost"] is None
 	assert len(calls) == 3
+	calls.clear()
+	resources = resource_cost_service.list_resources(group)
+	assert resources[0]["region"] == "centralindia"
+	assert resources[0]["sku"] == "Standard_B2s"
+	assert resources[1]["sku"] is None
+	assert len(calls) == 2 and all("/resources?" in url for url in calls)
 
 
 def test_resource_costs_reject_external_pagination_links():
@@ -119,21 +155,53 @@ def test_resource_costs_coalesce_requests_and_expire_cache(monkeypatch):
 		calls.append(resource_id)
 		started.set()
 		assert release.wait(timeout=5)
-		return [{"name": "vm", "cost": 5}]
+		return {"vm": {"cost": 5}}
 
 	monkeypatch.setattr(service, "_fetch_resource_costs", fetch)
 	monkeypatch.setattr(service, "monotonic", lambda: now[0])
 	with ThreadPoolExecutor(max_workers=8) as executor:
-		futures = [executor.submit(service.list_resource_costs, group) for _ in range(8)]
+		futures = [executor.submit(service.get_cost_snapshot, group) for _ in range(8)]
 		assert started.wait(timeout=5)
 		release.set()
 		results = [future.result(timeout=5) for future in futures]
 	assert len(calls) == 1
-	results[0][0]["cost"] = 100
-	assert service.list_resource_costs(group)[0]["cost"] == 5
-	now[0] += 301
-	assert service.list_resource_costs(group)[0]["cost"] == 5
+	results[0].costs["vm"]["cost"] = 100
+	now[0] += 3599
+	assert service.get_cost_snapshot(group.upper()).costs["vm"]["cost"] == 5
+	assert len(calls) == 1
+	now[0] += 1
+	assert service.get_cost_snapshot(group).costs["vm"]["cost"] == 5
 	assert len(calls) == 2
+
+
+def test_expired_costs_are_served_on_throttle_but_not_across_billing_months(monkeypatch):
+	from app.services import resource_cost_service as service
+
+	group = "/subscriptions/test/resourceGroups/rg-stale-test"
+	now, month, calls = [100.0], ["2026-10"], []
+	def fetch(resource_id):
+		calls.append(resource_id)
+		if len(calls) == 2:
+			raise service.ResourceCostThrottled(60)
+		return {"vm": {"cost": len(calls), "currency": "USD"}}
+
+	monkeypatch.setattr(service, "_fetch_resource_costs", fetch)
+	monkeypatch.setattr(service, "monotonic", lambda: now[0])
+	monkeypatch.setattr(service, "_billing_month", lambda: month[0])
+	fresh = service.get_cost_snapshot(group)
+	assert not fresh.stale
+	now[0] += 3600
+	for _ in range(2):
+		stale = service.get_cost_snapshot(group)
+		assert stale.stale and stale.fetched_at == fresh.fetched_at
+		assert stale.costs == fresh.costs
+	assert len(calls) == 2
+	month[0] = "2026-11"
+	with pytest.raises(service.ResourceCostThrottled):
+		service.get_cost_snapshot(group)
+	now[0] += 60
+	new = service.get_cost_snapshot(group)
+	assert not new.stale and new.costs["vm"]["cost"] == 3
 
 
 def test_resource_cost_retries_short_throttling_delays(monkeypatch):
@@ -166,17 +234,17 @@ def test_resource_cost_long_throttle_prevents_repeated_requests(monkeypatch):
 	def fetch(resource_id):
 		with httpx.Client(transport=httpx.MockTransport(respond)) as http:
 			service._request_with_retry(http, "POST", "https://management.azure.com/test")
-		return []
+		return {}
 	monkeypatch.setattr(service, "_fetch_resource_costs", fetch)
 	monkeypatch.setattr(service, "monotonic", lambda: now[0])
 	for _ in range(2):
 		with pytest.raises(service.ResourceCostThrottled) as error:
-			service.list_resource_costs(group)
+			service.get_cost_snapshot(group)
 		assert error.value.retry_after == 60
 	assert len(attempts) == 1
 	now[0] += 60
 	with pytest.raises(service.ResourceCostThrottled):
-		service.list_resource_costs(group)
+		service.get_cost_snapshot(group)
 	assert len(attempts) == 2
 
 
@@ -189,11 +257,11 @@ def test_resource_cost_failure_is_not_cached(monkeypatch):
 		calls.append(resource_id)
 		if len(calls) == 1:
 			raise ValueError("Invalid Azure response")
-		return [{"name": "vm"}]
+		return {"vm": {"cost": 1}}
 	monkeypatch.setattr(service, "_fetch_resource_costs", fetch)
 	with pytest.raises(ValueError):
-		service.list_resource_costs(group)
-	assert service.list_resource_costs(group) == [{"name": "vm"}]
+		service.get_cost_snapshot(group)
+	assert service.get_cost_snapshot(group).costs == {"vm": {"cost": 1}}
 	assert len(calls) == 2
 
 
@@ -213,6 +281,10 @@ def test_resource_cost_endpoint_reports_rate_limit(client, monkeypatch):
 	assert response.status_code == 429
 	assert response.headers["Retry-After"] == "60"
 	assert "60 seconds" in response.json()["detail"]
+	monkeypatch.setattr(service, "get_cost_snapshot", throttled)
+	response = client.get(f"/api/v1/sandboxes/{request['reference']}/resources/costs")
+	assert response.status_code == 429
+	assert response.headers["Retry-After"] == "60"
 
 
 def test_missing_role_defaults_to_contributor(client):

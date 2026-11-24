@@ -115,12 +115,18 @@ not as an automatic startup action.
 8. Test a non-production request, extension, retry and deletion before reopening
 	production. Preserve the old JSON backup until reconciliation is complete.
 
-The sandbox detail page queries Azure resource inventory and month-to-date costs
-using the backend's Azure identity. That identity needs resource read and Cost
-Management read/query permissions at the sandbox resource-group scope. Cost data
-can be delayed; resources without reported costs are not treated as zero.
-Resource and cost results are cached for five minutes per backend process. Azure
-rate limits are reported with a retry time rather than as permission failures.
+On the sandbox detail page, **View resources** opens an inventory table with CSV
+export. Inventory is fetched separately from costs when the table opens. Region
+and SKU are shown when Azure returns them in the resource listing. The backend
+identity needs resource read and, for month-to-date costs, Cost Management
+read/query permissions at the sandbox resource-group scope.
+
+Cost snapshots are cached for one hour per Azure resource group and UTC month,
+per API process. The next request after expiry refreshes the snapshot. During
+Azure throttling, the table shows the last same-month snapshot and its fetch
+time if available; otherwise the cost endpoint returns a retry time. Inventory
+and export still work if only the cost query is throttled. Missing costs are not
+treated as zero. Each API process has its own cache, which clears on restart.
 
 ## Azure App Service Deployment
 

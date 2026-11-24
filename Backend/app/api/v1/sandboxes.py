@@ -54,17 +54,56 @@ def get_lifecycle(reference: str, current_user: dict = Depends(get_current_user)
 
 @router.get("/{reference}/resources")
 def get_resources(reference: str, current_user: dict = Depends(get_current_user)):
-    from app.core.config import settings
+    return _resource_cost_result(reference, current_user, include_inventory=True)
+
+
+@router.get("/{reference}/resources/costs")
+def get_resource_costs(reference: str, current_user: dict = Depends(get_current_user)):
+    return _resource_cost_result(reference, current_user, include_inventory=False)
+
+
+def _sandbox_resource_group(reference: str, current_user: dict) -> str | None:
     from app.core.security import is_admin
-    from app.services.resource_cost_service import ResourceCostThrottled, list_resource_costs
 
     request = sandbox_service.get_request_or_404(reference)
     if not (sandbox_service.is_owner(request, current_user) or is_admin(current_user)):
         raise sandbox_service.SandboxError(f"Sandbox {reference} was not found.", 404)
-    if not settings.COST_MANAGEMENT_ENABLED or not request.get("resource_id"):
+    return request.get("resource_id")
+
+
+@router.get("/{reference}/resources/inventory")
+def get_resource_inventory(reference: str, current_user: dict = Depends(get_current_user)):
+    from app.services.resource_cost_service import ResourceCostThrottled, list_resources
+
+    resource_id = _sandbox_resource_group(reference, current_user)
+    if not resource_id:
+        raise HTTPException(status_code=409, detail="Resource inventory is not available for this sandbox.")
+    try:
+        return list_resources(resource_id)
+    except ResourceCostThrottled as exc:
+        logger.warning("Azure throttled resource inventory for %s; retry in %s seconds", reference, exc.retry_after)
+        raise HTTPException(
+            status_code=429,
+            detail=f"Azure is temporarily limiting inventory requests. Try again in {exc.retry_after} seconds.",
+            headers={"Retry-After": str(exc.retry_after)},
+        ) from exc
+    except (AzureError, httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
+        logger.exception("Could not retrieve resource inventory for %s", reference)
+        raise HTTPException(status_code=503, detail="Azure resource inventory is unavailable. Try again.") from exc
+
+
+def _resource_cost_result(reference: str, current_user: dict, *, include_inventory: bool):
+    from app.core.config import settings
+    from app.services.resource_cost_service import ResourceCostThrottled, get_cost_snapshot, list_resource_costs
+
+    resource_id = _sandbox_resource_group(reference, current_user)
+    if not settings.COST_MANAGEMENT_ENABLED or not resource_id:
         raise HTTPException(status_code=409, detail="Resource cost data is not available for this sandbox.")
     try:
-        return list_resource_costs(request["resource_id"])
+        if include_inventory:
+            return list_resource_costs(resource_id)
+        snapshot = get_cost_snapshot(resource_id)
+        return {"costs": snapshot.costs, "fetchedAt": snapshot.fetched_at, "stale": snapshot.stale}
     except ResourceCostThrottled as exc:
         logger.warning("Azure throttled resource costs for %s; retry in %s seconds", reference, exc.retry_after)
         raise HTTPException(

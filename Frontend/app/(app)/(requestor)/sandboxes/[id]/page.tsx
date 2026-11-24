@@ -9,6 +9,7 @@ import {
   Box,
   CalendarPlus,
   Copy,
+  Download,
   ExternalLink,
   Loader,
   Power,
@@ -25,6 +26,7 @@ import type { HistoryEntry, HistoryStatus, Sandbox } from "@/lib/types";
 import { hasComparableCost, useMoney, usedPct } from "@/components/admin/format";
 import { useAuth } from "@/hooks/useAuth";
 import { apiFetch } from "@/lib/api";
+import { downloadCsv } from "@/lib/csv";
 
 
 function barColor(pct: number) {
@@ -97,44 +99,116 @@ function Card({ title, children }: { title: string; children: React.ReactNode })
   );
 }
 
-interface ResourceCost {
+interface ResourceInventoryItem {
   id: string;
   name: string;
   type: string;
-  cost: number | null;
-  currency: string | null;
+  region: string | null;
+  sku: string | null;
 }
 
-function ResourceCosts({ reference }: { reference: string }) {
+interface ResourceCostSnapshot {
+  costs: Record<string, { cost: number; currency: string }>;
+  fetchedAt: string;
+  stale: boolean;
+}
+
+function ResourceTable({ reference }: { reference: string }) {
   const { getApiToken } = useAuth();
   const tokenRef = useRef(getApiToken);
   const getToken = useCallback(() => tokenRef.current(), []);
   const money = useMoney();
-  const [resources, setResources] = useState<ResourceCost[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [resources, setResources] = useState<ResourceInventoryItem[] | null>(null);
+  const [inventoryError, setInventoryError] = useState<string | null>(null);
+  const [costs, setCosts] = useState<ResourceCostSnapshot | null>(null);
+  const [costError, setCostError] = useState<string | null>(null);
   useEffect(() => { tokenRef.current = getApiToken; });
   useEffect(() => {
     let active = true;
-    apiFetch<ResourceCost[]>(getToken, `/sandboxes/${encodeURIComponent(reference)}/resources`)
+    const path = `/sandboxes/${encodeURIComponent(reference)}/resources`;
+    apiFetch<ResourceInventoryItem[]>(getToken, `${path}/inventory`)
       .then((result) => { if (active) setResources(result); })
-      .catch((err: unknown) => { if (active) setError(err instanceof Error ? err.message : "Could not load resource costs."); });
+      .catch((err: unknown) => { if (active) setInventoryError(err instanceof Error ? err.message : "Could not load resources."); });
+    apiFetch<ResourceCostSnapshot>(getToken, `${path}/costs`)
+      .then((result) => { if (active) setCosts(result); })
+      .catch((err: unknown) => { if (active) setCostError(err instanceof Error ? err.message : "Could not load resource costs."); });
     return () => { active = false; };
   }, [getToken, reference]);
 
+  const exportResources = () => {
+    if (!resources?.length) return;
+    downloadCsv(
+      `${reference}-resources.csv`,
+      ["Resource name", "Type", "Region", "SKU", "Month-to-date cost", "Currency", "Cost fetched at (UTC)", "Cost status"],
+      resources.map((resource) => {
+        const cost = costs?.costs[resource.id.toLowerCase()];
+        return [
+          resource.name, resource.type, resource.region, resource.sku, cost?.cost, cost?.currency,
+          costs?.fetchedAt, costs ? (costs.stale ? "Cached - refresh delayed" : "Current snapshot") : costError ? "Unavailable" : "Loading",
+        ];
+      }),
+    );
+  };
+
   return (
-    <Card title="Deployed resources · current month cost">
-      {error ? <p role="alert" className="text-sm text-red-600">{error}</p> :
-        resources === null ? <p className="text-sm text-muted">Loading Azure resources and costs...</p> :
+    <div className="max-h-[70vh] overflow-y-auto p-6">
+      {inventoryError ? <p role="alert" className="text-sm text-red-600">{inventoryError}</p> :
+        resources === null ? <p role="status" className="text-sm text-muted">Loading Azure resources...</p> :
         resources.length === 0 ? <p className="text-sm text-muted">No deployed resources found.</p> :
-        <ul className="divide-y divide-border">
-          {resources.map((resource) => (
-            <li key={resource.id} className="flex flex-wrap justify-between gap-3 py-3 text-sm">
-              <span><span className="font-medium">{resource.name}</span><br /><span className="text-xs text-muted">{resource.type}</span></span>
-              <span>{resource.cost === null ? "No cost reported" : money(resource.cost, 2, resource.currency ?? undefined)}</span>
-            </li>
-          ))}
-        </ul>}
-      <p className="mt-3 text-xs text-muted">Azure cost data can be delayed. Resources without reported cost are not shown as zero.</p>
+        <>
+          <div className="mb-3 flex justify-end">
+            <button type="button" onClick={exportResources} className="inline-flex items-center gap-2 text-sm font-medium text-accent">
+              <Download size={16} aria-hidden="true" /> Export CSV
+            </button>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead className="bg-surface-2 text-muted">
+                <tr>
+                  {["Resource name", "Type", "Region", "SKU", "Month-to-date cost"].map((heading) => (
+                    <th key={heading} scope="col" className="px-3 py-2">{heading}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {resources.map((resource) => {
+                  const cost = costs?.costs[resource.id.toLowerCase()];
+                  return (
+                    <tr key={resource.id}>
+                      <th scope="row" className="px-3 py-2 font-medium">{resource.name}</th>
+                      <td className="px-3 py-2">{resource.type}</td>
+                      <td className="px-3 py-2">{resource.region ?? "—"}</td>
+                      <td className="px-3 py-2">{resource.sku ?? "—"}</td>
+                      <td className="px-3 py-2">{cost ? money(cost.cost, 2, cost.currency) :
+                        costs ? "No cost reported" : costError ? "Unavailable" : "Loading..."}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          {costError && <p role="status" className="mt-3 text-sm text-muted">{costError}</p>}
+          {costs && (
+            <p className="mt-3 text-xs text-muted">
+              {costs.stale ? "Azure is limiting cost requests; showing cached costs. " : ""}
+              Costs fetched {new Date(costs.fetchedAt).toLocaleString()}. Azure billing data can be delayed.
+            </p>
+          )}
+        </>}
+    </div>
+  );
+}
+
+function DeployedResources({ reference }: { reference: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Card title="Deployed resources">
+      <button type="button" onClick={() => setOpen(true)} className={actionCls}>
+        <Box size={16} aria-hidden="true" /> View resources
+      </button>
+      <Modal open={open} onClose={() => setOpen(false)} title="Deployed resources" wide>
+        {open && <ResourceTable key={reference} reference={reference} />}
+      </Modal>
     </Card>
   );
 }
@@ -475,7 +549,7 @@ function SandboxDetail({
             )}
           </Card>
 
-          {showActions && s.resourceId && <ResourceCosts reference={s.id} />}
+          {showActions && s.resourceId && <DeployedResources reference={s.id} />}
 
           {hasComparableCost(s) && s.spendHistory && s.spendHistory.length > 0 && (
             <Card title="Spend over time">

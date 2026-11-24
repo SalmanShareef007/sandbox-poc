@@ -53,7 +53,7 @@ interface SandboxContextValue {
   rejectExtension: (id: string, reason: string) => Promise<boolean>;
   approveDecommission: (id: string) => Promise<boolean>;
   rejectDecommission: (id: string, reason: string) => Promise<boolean>;
-  markNotificationsRead: () => Promise<boolean>;
+  markNotificationsRead: (ids: string[]) => Promise<boolean>;
   deleteDecommissioned: (id: string) => Promise<boolean>;
 }
 
@@ -91,37 +91,60 @@ export function SandboxProvider({ children }: { children: React.ReactNode }) {
   const getToken = useCallback(() => tokenRef.current(), []);
 
   const lastError = useRef<string | null>(null);
+  const lastNotificationError = useRef<string | null>(null);
+  const refreshVersion = useRef(0);
+  const appliedRefresh = useRef(0);
+  const appliedNotifications = useRef(0);
+
+  const loadNotifications = useCallback(async (version: number) => {
+    try {
+      const notices = await apiFetch<Notification[]>(getToken, "/notifications");
+      if (version < appliedNotifications.current) return;
+      appliedNotifications.current = version;
+      setNotifications(notices);
+      lastNotificationError.current = null;
+    } catch (err) {
+      if (version < appliedNotifications.current) return;
+      const message = err instanceof Error ? err.message : "Could not load notifications.";
+      if (lastNotificationError.current !== message) toast(message, "error");
+      lastNotificationError.current = message;
+    }
+  }, [getToken, toast]);
 
   const load = useCallback(async () => {
+    const version = ++refreshVersion.current;
+    const notificationLoad = loadNotifications(version);
     try {
-      const [own, every, extensions, notices, config, units] = await Promise.all([
+      const [own, every, extensions, config, units] = await Promise.all([
         apiFetch<Sandbox[]>(getToken, "/sandboxes"),
         isAdmin ? apiFetch<Sandbox[]>(getToken, "/admin/sandboxes") : Promise.resolve<Sandbox[]>([]),
         isAdmin
           ? apiFetch<ExtensionRequest[]>(getToken, "/extensions")
           : Promise.resolve<ExtensionRequest[]>([]),
-        apiFetch<Notification[]>(getToken, "/notifications"),
         apiFetch<PlatformConfiguration>(getToken, "/configuration"),
         isAdmin ? apiFetch<BusinessUnit[]>(getToken, "/admin/business-units") : Promise.resolve<BusinessUnit[]>([]),
       ]);
+      if (version < appliedRefresh.current) return;
+      appliedRefresh.current = version;
       setMine(own);
       setAll(every);
       setExtensionRequests(extensions);
-      setNotifications(notices);
       setConfiguration(config);
       setAdminBusinessUnits(units);
       setError(null);
       lastError.current = null;
     } catch (err) {
+      if (version < appliedRefresh.current) return;
       const message = err instanceof Error ? err.message : "Could not load sandboxes.";
       setError(message);
       // Only toast when the error changes, not on every poll.
       if (lastError.current !== message) toast(message, "error");
       lastError.current = message;
     } finally {
-      setIsLoading(false);
+      await notificationLoad;
+      if (version >= appliedRefresh.current) setIsLoading(false);
     }
-  }, [getToken, isAdmin, toast]);
+  }, [getToken, isAdmin, loadNotifications, toast]);
 
   const busy = useMemo(() => mine.some(isBusy) || all.some(isBusy), [mine, all]);
 
@@ -141,6 +164,7 @@ export function SandboxProvider({ children }: { children: React.ReactNode }) {
     let pending: ReturnType<typeof setTimeout> | undefined;
 
     const refresh = () => {
+      if (document.hidden) return;
       // Coalesce bursts of changes into at most one refresh per second.
       const wait = Math.max(0, lastRefresh + 1_000 - Date.now());
       if (pending) return;
@@ -156,12 +180,14 @@ export function SandboxProvider({ children }: { children: React.ReactNode }) {
       controller = new AbortController();
       try {
         const token = await getToken();
+        if (stopped) return;
         if (!token) throw new Error("no token");
         const response = await fetch(`${API_BASE_URL}/api/v1/events`, {
           headers: { Authorization: `Bearer ${token}`, Accept: "text/event-stream" },
           signal: controller.signal,
           cache: "no-store",
         });
+        if (stopped) return;
         if (!response.ok || !response.body) throw new Error(`stream ${response.status}`);
         setStreamLive(true);
         const reader = response.body.getReader();
@@ -169,7 +195,7 @@ export function SandboxProvider({ children }: { children: React.ReactNode }) {
         let buffer = "";
         for (;;) {
           const { value, done } = await reader.read();
-          if (done) break;
+          if (done || stopped) break;
           buffer += decoder.decode(value, { stream: true });
           const frames = buffer.split("\n\n");
           buffer = frames.pop() ?? "";
@@ -178,8 +204,10 @@ export function SandboxProvider({ children }: { children: React.ReactNode }) {
       } catch {
         // fall through to reconnect
       }
-      setStreamLive(false);
-      if (!stopped) reconnect = setTimeout(connect, 3_000);
+      if (!stopped) {
+        setStreamLive(false);
+        reconnect = setTimeout(connect, 3_000);
+      }
     };
 
     void connect();
@@ -212,10 +240,14 @@ export function SandboxProvider({ children }: { children: React.ReactNode }) {
     const timer = setInterval(tick, interval);
     const onVisible = () => void tick();
     document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
+    window.addEventListener("online", onVisible);
     return () => {
       cancelled = true;
       clearInterval(timer);
       document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onVisible);
+      window.removeEventListener("online", onVisible);
     };
   }, [ready, load, busy, isAdmin, streamLive]);
 
@@ -314,10 +346,19 @@ export function SandboxProvider({ children }: { children: React.ReactNode }) {
     [run, post]
   );
 
-  const markNotificationsRead = useCallback(
-    async () => (await run(() => post<{ updated: number }>("/notifications/read"))) !== null,
-    [run, post]
-  );
+  const markNotificationsRead = useCallback(async (ids: string[]) => {
+    try {
+      await post<{ updated: number }>("/notifications/read", { ids });
+      // Discard notification snapshots started before the read was confirmed.
+      appliedNotifications.current = ++refreshVersion.current;
+      const readIds = new Set(ids);
+      setNotifications((current) => current.map((notice) => readIds.has(notice.id) ? { ...notice, read: true } : notice));
+      return true;
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "Could not mark notifications as read.", "error");
+      return false;
+    }
+  }, [post, toast]);
 
   const deleteDecommissioned = useCallback(
     async (id: string) =>
